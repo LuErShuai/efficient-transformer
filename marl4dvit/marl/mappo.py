@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Categorical
 from torch.utils.data.sampler import *
+import numpy as np
 
 
 # Trick 8: orthogonal initialization
@@ -185,7 +186,13 @@ class MAPPO:
                 return a_n.numpy(), a_logprob_n.numpy()
 
     def get_value(self, s):
+        # we need to construct a global feature as the input of critic
+        # for each agent, the global feature is concat(token, cls_token)
+        # state_n.shape: [batch_size, token_num, token_dim]
+        # cls_token.shape: [batch_size, 1, token_dim]
+        # batch_size here means the batch size in dvit
         with torch.no_grad():
+
             critic_inputs = []
             # Because each agent has the same global state, we need to repeat the global state 'N' times.
             s = torch.tensor(s, dtype=torch.float32).unsqueeze(0).repeat(self.N, 1)  # (state_dim,)-->(N,state_dim)
@@ -193,7 +200,10 @@ class MAPPO:
             if self.add_agent_id:  # Add an one-hot vector to represent the agent_id
                 critic_inputs.append(torch.eye(self.N))
             critic_inputs = torch.cat([x for x in critic_inputs], dim=-1)  # critic_input.shape=(N, critic_input_dim)
-            v_n = self.critic(critic_inputs)  # v_n.shape(N,1)
+            # cls_token_global = np.tile(cls_token, (cls_token.shape[0],
+            #                                        state_n.shape[1], cls_token[2]))
+            # critic_inputs = np.concatenate((state_n, cls_token_global), axis=-1)
+            v_n = self.critic(critic_inputs)  # v_n.shape(B,N,1)
             return v_n.numpy().flatten()
 
     def train(self, replay_buffer, total_steps):

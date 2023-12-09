@@ -69,56 +69,66 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
             #     "action":[],
             #     "action_prob":[]
             # }
-            Transition = namedtuple('Transition', ['state', 'action',  'a_log_prob', 'reward', 'next_state'])
+            Transition = namedtuple('Transition', ['episode_step', 'state_n',
+                                                   'state_next_n', 'cls_token',
+                                                   'action_n', 'action_prob_n',
+                                                   'reward_n', 'done_n'])   
+            # shape of buffer
+
+            # self.buffer = {
+            #     "state_n":[], #[block_num, batch_size, token_num, token_dim]
+            #     "state_next_n":[],
+            #     "cls_token":[],
+            #     "action_n":[],
+            #     "action_prob_n":[],
+            #     "mask":[], #[block_num, batch_size, token_num]
+            #     "token_keep_ratio":[]
+            # }
             buffers = model.buffer
 
-            batch_size = buffers["state"][0].shape[0]
-            token_num  = buffers["state"][0].shape[1]
-            block_num  = len(buffers["state"])
+            state_n = np.array(buffers["state_n"])
+            state_next_n = np.array(buffers["state_next_n"])
+            died = np.array(buffers["done_n"])
+            new_column = np.ones((1,died.shape[1],died.shape[2]), dtype=died.dtype) 
+            died_with_ones_ = np.concatenate((new_column, died), axis=0)
+            died_with_ones = died_with_ones_[:died.shape[0],:,:]
+        
+            # zero out observation for died agent according to mask
+            state_n[died_with_ones==1] = 0
+            state_next_n[died==1] = 0
+
+
+
+            batch_size = buffers["state_n"][0].shape[0]
+            episode_step  = buffers["state_n"][0].shape[1]
+            block_num  = len(buffers["state_n"])
             token_keep_ratio = buffers["token_keep_ratio"][0]
             # token_keep_ratio = 0
 
-            time_2 = time.perf_counter()
-
-            # for i in range(batch_size):
-            for i in range(1):
-            # for i in random.sample(range(1,batch_size), 5):
+            for i in range(batch_size):
                 if outputs_max_index[i] == targets_max_index[i]:
                     classify_correct = True 
                 else:
                     classify_correct = False
 
-                # for j in range(token_num):
-                for j in random.sample(range(1,token_num), 15):
-                    del model.agent.buffer[:] # clear experience
-                    token_done = False
-                    for k in range(block_num):
-                        if token_done:
-                            break
-                        # size of buffers["state"]: [block_num, batch_size, token_num, token_dim]
-                        state = buffers["state"][k][i][j]
-                        action = buffers["action"][k][i][j]
-                        if action == 0:
-                            token_done = True
-                        action_prob = buffers["action_prob"][k][i][j]
-                        state_next = buffers["state_next"][k][i][j]
+                for j in range(episode_step):
+                    state_n = buffers["state_n"][j][i]
+                    state_next_n = buffers["state_next_n"][j][i]
+                    cls_token = buffers["cls_token"][j][i]
+                    action_n = buffers["action_n"][j][i]
+                    action_prob_n = buffers["action"][j][i]
+                    reward_n = caculate_reward()
+                    done_n = buffers["done_n"][j][i]
 
-                        reward = caculate_reward_per_step(k, classify_correct,
-                                                           action, token_keep_ratio,
-                                                          model.agent.total_steps)
-                        trans = Transition(state.detach().cpu().numpy(), action, action_prob,
-                                           reward, state_next.detach().cpu().numpy())
-                        model.agent.store_transition(trans)
-                        model.agent.total_steps += 1
+                    trans = Transition(episode_step, state_n, state_next_n,
+                                       cls_token, action_n, action_prob_n, reward_n,
+                                       done_n)
+                    model.replay_buffer.store_transition(trans)
 
-                        
-                    
-                    # if len(model.agent.buffer) > model.agent.batch_size:
-                    #     model.agent.update()
-                if len(model.agent.buffer) > 0:
-                    model.agent.update()
+                model.agent_n.episode_num += 1
 
-            time_3 = time.perf_counter()
+            model.agent_n.train(model.replay_buffer,
+                                model.replay_buffer.total_steps)
 
             # if utils.is_main_process() and model.agent.training_step > 50000:
             if sample_num%100 == 0:
@@ -127,42 +137,6 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
                 print("-------------------save ppo weight-------------------")
                 # return
 
-            end_2 = time.perf_counter()
-            run_time_deit = end_1 -start
-            run_time_agent = end_2 - end_1 
-            # print("run time deit:", run_time_deit * 1000)
-            # print("run time cycle", (time_3 - time_2) * 1000)
-            # print("run time agent:", run_time_agent * 1000)
-
-
-
-
-
-            # for j in range(block_num):
-            #     # size of buffer["state"]: [block_num, batch_size, token_num, token_dim]
-            #     # size of state: [token_num, token_dim]
-            #     state = buffers["state"][j][i]
-            #     action = buffers["action"][j][i]
-            #     action_prob = buffers["action_prob"][j][i]
-            #     state_next  = buffers["state_next"][j][i]
-            #     # reward = caculate_reward(j, classify_correct, action)
-
-            #     token_num = state.shape[0]
-            #     for k in range(token_num):
-            #         reward = caculate_reward_per_token(j, classify_correct,
-            #                                            action[k])
-            #         trans = Transition(state[k], action[k], action_prob[k],
-            #                            reward, next_state[k])
-            #         model.agent.store_transition(trans)
-
-            #         # one image with 12 block
-            #         # which means 12 step/transition for rl
-            #         # after 12 transition store into agent.buffer
-            #         # mean this trajecotry for rl is done
-            #         # so the update should being excuted
-            #         if len(model.agent.buffer) > model.agent.batch_size:
-            #             model.agent.update()
-        
 
         if not math.isfinite(loss_value):
             print("Loss is {}, stopping training".format(loss_value))
