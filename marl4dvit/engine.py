@@ -18,6 +18,7 @@ import utils
 from collections import namedtuple
 import time
 import random 
+import numpy as np
 
 def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
@@ -69,10 +70,9 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
             #     "action":[],
             #     "action_prob":[]
             # }
-            Transition = namedtuple('Transition', ['episode_step', 'state_n',
-                                                   'state_next_n', 'cls_token',
-                                                   'action_n', 'action_prob_n',
-                                                   'reward_n', 'done_n'])   
+            Transition = namedtuple('Transition', ['episode_num','episode_step', 'obs_n', 'v_n',
+                                                   'obs_n_', 'a_n', 'a_logprob_n',
+                                                   'r_n', 'done_n'])   
             # shape of buffer
 
             # self.buffer = {
@@ -86,22 +86,44 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
             # }
             buffers = model.buffer
 
-            state_n = np.array(buffers["state_n"])
-            state_next_n = np.array(buffers["state_next_n"])
-            died = np.array(buffers["done_n"])
-            new_column = np.ones((1,died.shape[1],died.shape[2]), dtype=died.dtype) 
-            died_with_ones_ = np.concatenate((new_column, died), axis=0)
-            died_with_ones = died_with_ones_[:died.shape[0],:,:]
-        
+            # state_n = np.array(buffers["state_n"])
+            # state_next_n = np.array(buffers["state_next_n"])
+            # died = np.array(buffers["done_n"])
+            # new_column = np.ones((1,died.shape[1],died.shape[2]), dtype=died.dtype) 
+            # died_with_ones_ = np.concatenate((new_column, died), axis=0)
+            # died_with_ones = died_with_ones_[:died.shape[0],:,:]
+            
+            # shape of died: [3, 64, 197]
+            # shape of new_column: [1, 64, 197]
+            # died_ = np.array(buffers["done_n"])
+
+            state_n_ = torch.stack(buffers["state_n"])
+            v_n_ = torch.stack(buffers["v_n"])
+            state_next_n_ = torch.stack(buffers["state_next_n"])
+            cls_token_ = torch.stack(buffers["cls_token"])
+            action_n_ = torch.stack(buffers["action_n"])
+            action_prob_n_ = torch.stack(buffers["action_prob_n"])
+            mask_ = torch.stack(buffers["mask"])
+            done_n_ = torch.stack(buffers["done_n"])
+            died_ = torch.stack(buffers["done_n"])
+
+
             # zero out observation for died agent according to mask
-            state_n[died_with_ones==1] = 0
-            state_next_n[died==1] = 0
+            # if agent i died, then there is no state_next_n in current step
+            # if agent i died, then there is no state_n in the next step
+            new_column = torch.ones((1, mask_.shape[1], mask_.shape[2]),device=mask_.device,dtype=mask_.dtype)
+            mask_with_ones = torch.cat((new_column, mask_), axis=0)
+            mask_with_ones_ = mask_with_ones[:mask_.shape[0],:,:]
+        
+            state_n_[mask_with_ones_==0] = 0
+            state_next_n_[mask_==0] = 0
 
 
 
             batch_size = buffers["state_n"][0].shape[0]
-            episode_step  = buffers["state_n"][0].shape[1]
-            block_num  = len(buffers["state_n"])
+            # episode_step  = buffers["state_n"][0].shape[1]
+            # block_num  = len(buffers["state_n"])
+            episode_step = len(buffers["state_n"])
             token_keep_ratio = buffers["token_keep_ratio"][0]
             # token_keep_ratio = 0
 
@@ -112,23 +134,22 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
                     classify_correct = False
 
                 for j in range(episode_step):
-                    state_n = buffers["state_n"][j][i]
-                    state_next_n = buffers["state_next_n"][j][i]
-                    cls_token = buffers["cls_token"][j][i]
-                    action_n = buffers["action_n"][j][i]
-                    action_prob_n = buffers["action"][j][i]
-                    reward_n = caculate_reward()
-                    done_n = buffers["done_n"][j][i]
+                    state_n = state_n_[j][i]
+                    state_next_n = state_next_n_[j][i]
+                    cls_token = cls_token_[j][i]
+                    action_n = action_n_[j][i]
+                    action_prob_n = action_prob_n_[j][i]
+                    mask = mask_[j][i]
+                    reward_n = caculate_reward_per_image(classify_correct,j,mask)
+                    done_n = done_n_[j][i]
+                    v_n = v_n_[j][i]
 
-                    trans = Transition(episode_step, state_n, state_next_n,
-                                       cls_token, action_n, action_prob_n, reward_n,
-                                       done_n)
+                    trans = Transition(i,j, state_n[1:197,:], v_n, state_next_n[1:197,:],
+                                       action_n, action_prob_n, reward_n,done_n[1:197])
                     model.replay_buffer.store_transition(trans)
 
-                model.agent_n.episode_num += 1
-
             model.agent_n.train(model.replay_buffer,
-                                model.replay_buffer.total_steps)
+                                model.replay_buffer.total_step)
 
             # if utils.is_main_process() and model.agent.training_step > 50000:
             if sample_num%100 == 0:
@@ -166,6 +187,35 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+
+def caculate_reward_per_image(classify_correct, episode_step, mask):
+    reward_for_classify = 1
+    if classify_correct:
+        reward_1 = 1.0 * reward_for_classify
+    else:
+        reward_1 = -1.0 * reward_for_classify
+
+    keep = torch.unique(mask[1:197], return_counts=True)
+    keep_num = keep[1][1]
+    keep_num_ = mask[1:197].numel()
+    keep_ratio = [0.8, 0.8*0.8, 0.8*0.8*0.8]
+    keep_ratio_ = keep_num/keep_num_
+
+    # reward_2 = -math.exp(abs(keep_ratio - keep_ratio_))
+    if abs(keep_ratio[episode_step] - keep_ratio_) < 0.05:
+        reward_2 = 1.0
+    else:
+        reward_2 = -1.0
+
+    alpha = 0.5 
+    reward = alpha*reward_1 + (1-alpha)*reward_2
+    
+    return reward
+
+
+    
+    
+
 
 def caculate_reward_per_step(num_block, classify_correct, action, token_keep_ratio,
                              total_steps):

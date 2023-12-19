@@ -24,7 +24,7 @@ from samplers import RASampler
 from augment import new_data_aug_generator
 
 import os
-# os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "4"
 
 import utils
 
@@ -272,7 +272,8 @@ def main(args):
         drop_path_rate=args.drop_path,
         drop_block_rate=None,
         img_size=args.input_size,
-        batch_size=args.batch_size
+        batch_size=args.batch_size,
+        train_agent=args.train_agent
     )
 
 

@@ -158,7 +158,8 @@ class MAPPO:
         else:
             self.ac_optimizer = torch.optim.Adam(self.ac_parameters, lr=self.lr)
 
-    def choose_action(self, obs_n, evaluate):
+    def choose_action(self, obs, evaluate):
+        obs_n = obs[:,1:197,:]
         with torch.no_grad():
             actor_inputs = []
             obs_n = torch.tensor(obs_n, dtype=torch.float32)  # obs_n.shape=(N，obs_dim)
@@ -172,7 +173,10 @@ class MAPPO:
                     [obs of agent_3]+[0,0,1]
                     So, we need to concatenate a N*N unit matrix(torch.eye(N))
                 """
-                actor_inputs.append(torch.eye(self.N))
+                eye = torch.eye((self.N)).to('cuda')
+                eye_ = eye.reshape(1, eye.shape[0], eye.shape[1])
+                eye_batch = eye_.repeat([obs_n.shape[0], 1, 1])
+                actor_inputs.append(eye_batch)
 
             actor_inputs = torch.cat([x for x in actor_inputs], dim=-1)  # actor_input.shape=(N, actor_input_dim)
             prob = self.actor(actor_inputs)  # prob.shape=(N,action_dim)
@@ -183,28 +187,39 @@ class MAPPO:
                 dist = Categorical(probs=prob)
                 a_n = dist.sample()
                 a_logprob_n = dist.log_prob(a_n)
-                return a_n.numpy(), a_logprob_n.numpy()
+                # return a_n.numpy(), a_logprob_n.numpy()
+                return a_n, a_logprob_n
 
     def get_value(self, s):
         # we need to construct a global feature as the input of critic
         # for each agent, the global feature is concat(token, cls_token)
-        # state_n.shape: [batch_size, token_num, token_dim]
+        # state_n.shape: [batch_size, token_num, token_dim]:[64,197,768]
         # cls_token.shape: [batch_size, 1, token_dim]
         # batch_size here means the batch size in dvit
         with torch.no_grad():
 
             critic_inputs = []
             # Because each agent has the same global state, we need to repeat the global state 'N' times.
-            s = torch.tensor(s, dtype=torch.float32).unsqueeze(0).repeat(self.N, 1)  # (state_dim,)-->(N,state_dim)
-            critic_inputs.append(s)
+            # s = torch.tensor(s, dtype=torch.float32).unsqueeze(0).repeat(self.N, 1)  # (state_dim,)-->(N,state_dim)
+            state_n = s[:,1:197,:]
+            cls_token = s[:,0,:].reshape(state_n.shape[0], 1, state_n.shape[2])
+            cls_token_n = cls_token.repeat([1, state_n.shape[1],1])
+            
+            state_global = torch.cat((state_n, cls_token_n), axis=-1)
+
+            critic_inputs.append(state_global)
             if self.add_agent_id:  # Add an one-hot vector to represent the agent_id
-                critic_inputs.append(torch.eye(self.N))
+                eye = torch.eye((self.N)).to('cuda')
+                eye_ = eye.reshape(1, eye.shape[0], eye.shape[1])
+                eye_batch = eye_.repeat([state_n.shape[0], 1, 1])
+                critic_inputs.append(eye_batch)
             critic_inputs = torch.cat([x for x in critic_inputs], dim=-1)  # critic_input.shape=(N, critic_input_dim)
             # cls_token_global = np.tile(cls_token, (cls_token.shape[0],
             #                                        state_n.shape[1], cls_token[2]))
             # critic_inputs = np.concatenate((state_n, cls_token_global), axis=-1)
             v_n = self.critic(critic_inputs)  # v_n.shape(B,N,1)
-            return v_n.numpy().flatten()
+            # return v_n.numpy().flatten()
+            return v_n.squeeze()
 
     def train(self, replay_buffer, total_steps):
         batch = replay_buffer.get_training_data()  # get training data
