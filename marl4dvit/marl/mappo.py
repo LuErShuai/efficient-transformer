@@ -158,8 +158,8 @@ class MAPPO:
         else:
             self.ac_optimizer = torch.optim.Adam(self.ac_parameters, lr=self.lr)
 
-    def choose_action(self, obs, evaluate):
-        obs_n = obs[:,1:197,:]
+    def choose_action(self, obs_n, evaluate):
+        # shape of obs_n: [batch_size, token_num - 1, token_dim]
         with torch.no_grad():
             actor_inputs = []
             obs_n = torch.tensor(obs_n, dtype=torch.float32)  # obs_n.shape=(N，obs_dim)
@@ -191,6 +191,8 @@ class MAPPO:
                 return a_n, a_logprob_n
 
     def get_value(self, s):
+        # shape of input s : [64, 196, 768]
+        # shape of output v_n : [64, 196]
         # we need to construct a global feature as the input of critic
         # for each agent, the global feature is concat(token, cls_token)
         # state_n.shape: [batch_size, token_num, token_dim]:[64,197,768]
@@ -203,6 +205,8 @@ class MAPPO:
             # s = torch.tensor(s, dtype=torch.float32).unsqueeze(0).repeat(self.N, 1)  # (state_dim,)-->(N,state_dim)
             state_n = s[:,1:197,:]
             cls_token = s[:,0,:].reshape(state_n.shape[0], 1, state_n.shape[2])
+            # state_n = obs_n
+            # cls_token = cls_token.reshape(state_n.shape[0], 1, state_n.shape[2])
             cls_token_n = cls_token.repeat([1, state_n.shape[1],1])
             
             state_global = torch.cat((state_n, cls_token_n), axis=-1)
@@ -223,17 +227,19 @@ class MAPPO:
 
     def train(self, replay_buffer, total_steps):
         batch = replay_buffer.get_training_data()  # get training data
-
+        
         # Calculate the advantage using GAE
         adv = []
         gae = 0
         with torch.no_grad():  # adv and td_target have no gradient
-            deltas = batch['r_n'] + self.gamma * batch['v_n'][:, 1:] * (1 - batch['done_n']) - batch['v_n'][:, :-1]  # deltas.shape=(batch_size,episode_limit,N)
+            # deltas = batch['r_n'] + self.gamma * batch['v_n'][:, 1:] * (1 - batch['done_n']) - batch['v_n'][:, :-1]  # deltas.shape=(batch_size,episode_limit,N)
+            deltas = batch['r_n'] + self.gamma * batch['v_n_'] * (1 - batch['done_n']) - batch['v_n']  # deltas.shape=(batch_size,episode_limit,N)
             for t in reversed(range(self.episode_limit)):
                 gae = deltas[:, t] + self.gamma * self.lamda * gae
                 adv.insert(0, gae)
             adv = torch.stack(adv, dim=1)  # adv.shape(batch_size,episode_limit,N)
-            v_target = adv + batch['v_n'][:, :-1]  # v_target.shape(batch_size,episode_limit,N)
+            # v_target = adv + batch['v_n'][:, :-1]  # v_target.shape(batch_size,episode_limit,N)
+            v_target = adv + batch['v_n']  # v_target.shape(batch_size,episode_limit,N)
             if self.use_adv_norm:  # Trick 1: advantage normalization
                 adv = ((adv - adv.mean()) / (adv.std() + 1e-5))
 
@@ -280,7 +286,8 @@ class MAPPO:
                 actor_loss = -torch.min(surr1, surr2) - self.entropy_coef * dist_entropy
 
                 if self.use_value_clip:
-                    values_old = batch["v_n"][index, :-1].detach()
+                    # values_old = batch["v_n"][index, :-1].detach()
+                    values_old = batch["v_n_"][index, :].detach()
                     values_error_clip = torch.clamp(values_now - values_old, -self.epsilon, self.epsilon) + values_old - v_target[index]
                     values_error_original = values_now - v_target[index]
                     critic_loss = torch.max(values_error_clip ** 2, values_error_original ** 2)
@@ -304,11 +311,20 @@ class MAPPO:
 
     def get_inputs(self, batch):
         actor_inputs, critic_inputs = [], []
-        actor_inputs.append(batch['obs_n'])
-        critic_inputs.append(batch['s'].unsqueeze(2).repeat(1, 1, self.N, 1))
+        # shape of obs_n: [batch_size, episode_step, token_num, token_dim]
+        # shape of cls_token: [batch_size, episode_step, token_dim]
+        obs_n = batch['obs_n']
+        cls_token = batch['cls_token']
+        cls_token = cls_token.reshape(cls_token.shape[0],cls_token.shape[1],1,cls_token.shape[2])
+        cls_token_n = cls_token.repeat([1,1,obs_n.shape[2],1])
+
+        state_global = torch.cat((obs_n, cls_token_n), axis=-1)
+
+        actor_inputs.append(obs_n)
+        critic_inputs.append(state_global)
         if self.add_agent_id:
             # agent_id_one_hot.shape=(mini_batch_size, max_episode_len, N, N)
-            agent_id_one_hot = torch.eye(self.N).unsqueeze(0).unsqueeze(0).repeat(self.batch_size, self.episode_limit, 1, 1)
+            agent_id_one_hot = torch.eye(self.N,device='cuda').unsqueeze(0).unsqueeze(0).repeat(obs_n.shape[0], obs_n.shape[1], 1, 1)
             actor_inputs.append(agent_id_one_hot)
             critic_inputs.append(agent_id_one_hot)
 

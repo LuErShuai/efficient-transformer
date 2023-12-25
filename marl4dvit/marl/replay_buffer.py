@@ -15,13 +15,20 @@ class ReplayBuffer():
 
     def reset_buffer(self):
         self.buffer = {
-            'obs_n': torch.empty([self.episode, self.episode_limit, self.N, self.obs_dim]),
-            'v_n': torch.empty([self.episode, self.episode_limit+ 1, self.N]),
-            'obs_n_': torch.empty([self.episode, self.episode_limit, self.N, self.obs_dim]),
-            'a_n': torch.empty([self.episode, self.episode_limit, self.N]),
-            'a_logprob_n': torch.empty([self.episode, self.episode_limit, self.N]),
-            'r_n': torch.empty([self.episode, self.episode_limit, self.N]),
-            'done_n': torch.empty([self.episode, self.episode_limit, self.N])
+            'obs_n': torch.empty([self.episode, self.episode_limit, self.N,
+                                  self.obs_dim], device='cuda'),
+            'v_n': torch.empty([self.episode, self.episode_limit, self.N],device='cuda'),
+            'obs_n_': torch.empty([self.episode, self.episode_limit, self.N,
+                                   self.obs_dim], device='cuda'),
+            'v_n_': torch.empty([self.episode, self.episode_limit, self.N],device='cuda'),
+            'a_n': torch.empty([self.episode, self.episode_limit, self.N],device='cuda'),
+            'a_logprob_n': torch.empty([self.episode, self.episode_limit, self.N],
+                                       device='cuda'),
+            'r_n': torch.empty([self.episode, self.episode_limit, self.N],device='cuda'),
+            'done_n': torch.empty([self.episode, self.episode_limit, self.N],
+                                  device='cuda'),
+            'cls_token':torch.empty([self.episode, self.episode_limit,
+                                     self.obs_dim], device='cuda')
         }
         self.episode_num = 0
 
@@ -44,11 +51,18 @@ class ReplayBuffer():
         self.buffer['obs_n'][episode_num][episode_step] = transition.obs_n
         self.buffer['v_n'][episode_num][episode_step] = transition.v_n
         self.buffer['obs_n_'][episode_num][episode_step] = transition.obs_n_
+        self.buffer['v_n_'][episode_num][episode_step] = transition.v_n_
         self.buffer['a_n'][episode_num][episode_step] = transition.a_n
         self.buffer['a_logprob_n'][episode_num][episode_step] = transition.a_logprob_n
         self.buffer['r_n'][episode_num][episode_step] = transition.r_n
         self.buffer['done_n'][episode_num][episode_step] = transition.done_n
+        self.buffer['cls_token'][episode_num][episode_step] = transition.cls_token
         self.total_step += 1
+
+    # def store_last_value(self, episode_step, v_n):
+    #     self.buffer['v_n'][self.episode_num][episode_step]
+    #     self.episode_num += 1
+
     
     def get_training_data(self):
         batch = {}

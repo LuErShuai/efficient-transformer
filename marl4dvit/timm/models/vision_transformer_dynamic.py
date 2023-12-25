@@ -14,13 +14,13 @@ from .layers import PatchEmbed, Mlp, DropPath, trunc_normal_, lecun_normal_, ACT
 from .registry import register_model
 
 
-from mappo import MAPPO
-from replay_buffer import ReplayBuffer
+from marl.mappo import MAPPO
+from marl.replay_buffer import ReplayBuffer
 import argparse
 
 import numpy as np
 
-from pyinstrument import Profiler
+# from pyinstrument import Profiler
 import time 
 import pdb
 import torch
@@ -224,7 +224,7 @@ Block for Dynamic Vision Transformer
 class Block(nn.Module):
 
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, drop=0., attn_drop=0.,
-                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, args=None):
+                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm):
         super().__init__()
         self.norm1 = norm_layer(dim)
         self.attn = Attention(dim, num_heads=num_heads, qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop)
@@ -235,7 +235,6 @@ class Block(nn.Module):
         mlp_hidden_dim = int(dim * mlp_ratio)
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
 
-        self.args = args
 
     # def forward(self, x):
 
@@ -277,7 +276,7 @@ class VisionTransformer(nn.Module):
     def __init__(self, img_size=224, patch_size=16, in_chans=3, num_classes=1000, embed_dim=768, depth=12,
                  num_heads=12, mlp_ratio=4., qkv_bias=True, representation_size=None, distilled=False,
                  drop_rate=0., attn_drop_rate=0., drop_path_rate=0., embed_layer=PatchEmbed, norm_layer=None,
-                 act_layer=None, weight_init='', args=None, 
+                 act_layer=None, weight_init='', batch_size=128, train_agent=False
                  ):
         """
         Args:
@@ -320,7 +319,7 @@ hem to be on GPU p_rate (float): attention dropout rate
         self.blocks = nn.Sequential(*[
             Block(
                 dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, drop=drop_rate,
-                attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, act_layer=act_layer, args=args)
+                attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, act_layer=act_layer)
             for i in range(depth)])
         self.norm = norm_layer(embed_dim)
         self.batch_num = 0
@@ -348,44 +347,55 @@ hem to be on GPU p_rate (float): attention dropout rate
 
         self.init_weights(weight_init)
 
-        parser = argparse.ArgumentParser("Hyperparameters Setting for MAPPO in MPE environment")
-        parser.add_argument("--max_train_steps", type=int, default=int(3e6), help=" Maximum number of training steps")
-        parser.add_argument("--episode_limit", type=int, default=25, help="Maximum number of steps per episode")
-        parser.add_argument("--evaluate_freq", type=float, default=5000, help="Evaluate the policy every 'evaluate_freq' steps")
-        parser.add_argument("--evaluate_times", type=float, default=3, help="Evaluate times")
+        parser_mappo = argparse.ArgumentParser("Hyperparameters Setting for MAPPO in MPE environment")
+        parser_mappo.add_argument("--max_train_steps", type=int, default=int(3e6), help=" Maximum number of training steps")
+        parser_mappo.add_argument("--episode_limit", type=int, default=3, help="Maximum number of steps per episode")
+        parser_mappo.add_argument("--evaluate_freq", type=float, default=5000, help="Evaluate the policy every 'evaluate_freq' steps")
+        parser_mappo.add_argument("--evaluate_times", type=float, default=3, help="Evaluate times")
 
-        parser.add_argument("--batch_size", type=int, default=32, help="Batch size (the number of episodes)")
-        parser.add_argument("--mini_batch_size", type=int, default=8, help="Minibatch size (the number of episodes)")
-        parser.add_argument("--rnn_hidden_dim", type=int, default=64, help="The number of neurons in hidden layers of the rnn")
-        parser.add_argument("--mlp_hidden_dim", type=int, default=64, help="The number of neurons in hidden layers of the mlp")
-        parser.add_argument("--lr", type=float, default=5e-4, help="Learning rate")
-        parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor")
-        parser.add_argument("--lamda", type=float, default=0.95, help="GAE parameter")
-        parser.add_argument("--epsilon", type=float, default=0.2, help="GAE parameter")
-        parser.add_argument("--K_epochs", type=int, default=15, help="GAE parameter")
-        parser.add_argument("--use_adv_norm", type=bool, default=True, help="Trick 1:advantage normalization")
-        parser.add_argument("--use_reward_norm", type=bool, default=True, help="Trick 3:reward normalization")
-        parser.add_argument("--use_reward_scaling", type=bool, default=False, help="Trick 4:reward scaling. Here, we do not use it.")
-        parser.add_argument("--entropy_coef", type=float, default=0.01, help="Trick 5: policy entropy")
-        parser.add_argument("--use_lr_decay", type=bool, default=True, help="Trick 6:learning rate Decay")
-        parser.add_argument("--use_grad_clip", type=bool, default=True, help="Trick 7: Gradient clip")
-        parser.add_argument("--use_orthogonal_init", type=bool, default=True, help="Trick 8: orthogonal initialization")
-        parser.add_argument("--set_adam_eps", type=float, default=True, help="Trick 9: set Adam epsilon=1e-5")
-        parser.add_argument("--use_relu", type=float, default=False, help="Whether to use relu, if False, we will use tanh")
-        parser.add_argument("--use_rnn", type=bool, default=False, help="Whether to use RNN")
-        parser.add_argument("--add_agent_id", type=float, default=False, help="Whether to add agent_id. Here, we do not use it.")
-        parser.add_argument("--use_value_clip", type=float, default=False, help="Whether to use value clip.")
+        parser_mappo.add_argument("--batch_size", type=int, default=64, help="batch size (the number of episodes)")
+        parser_mappo.add_argument("--mini_batch_size", type=int, default=16, help="minibatch size (the number of episodes)")
+        parser_mappo.add_argument("--rnn_hidden_dim", type=int, default=64, help="the number of neurons in hidden layers of the rnn")
+        parser_mappo.add_argument("--mlp_hidden_dim", type=int, default=64, help="the number of neurons in hidden layers of the mlp")
+        parser_mappo.add_argument("--lr", type=float, default=5e-4, help="learning rate")
+        parser_mappo.add_argument("--gamma", type=float, default=0.99, help="discount factor")
+        parser_mappo.add_argument("--lamda", type=float, default=0.95, help="gae parameter")
+        parser_mappo.add_argument("--epsilon", type=float, default=0.2, help="gae parameter")
+        parser_mappo.add_argument("--k_epochs", type=int, default=15, help="gae parameter")
+        parser_mappo.add_argument("--use_adv_norm", type=bool, default=True, help="trick 1:advantage normalization")
+        parser_mappo.add_argument("--use_reward_norm", type=bool, default=True, help="trick 3:reward normalization")
+        parser_mappo.add_argument("--use_reward_scaling", type=bool, default=False, help="trick 4:reward scaling. here, we do not use it.")
+        parser_mappo.add_argument("--entropy_coef", type=float, default=0.01, help="trick 5: policy entropy")
+        parser_mappo.add_argument("--use_lr_decay", type=bool, default=True, help="trick 6:learning rate decay")
+        parser_mappo.add_argument("--use_grad_clip", type=bool, default=True, help="trick 7: gradient clip")
+        parser_mappo.add_argument("--use_orthogonal_init", type=bool, default=True, help="trick 8: orthogonal initialization")
+        parser_mappo.add_argument("--set_adam_eps", type=float, default=True, help="trick 9: set adam epsilon=1e-5")
+        parser_mappo.add_argument("--use_relu", type=float, default=False, help="whether to use relu, if false, we will use tanh")
+        parser_mappo.add_argument("--use_rnn", type=bool, default=False, help="whether to use rnn")
+        parser_mappo.add_argument("--add_agent_id", type=float, default=True, help="whether to add agent_id. here, we do not use it.")
+        parser_mappo.add_argument("--use_value_clip", type=float, default=False, help="whether to use value clip.")
 
-        self.args_mappo = parser.parse_args()
-        self.args_mappo.n = 196  # the number of agents
+        self.args_mappo, remaining_args = parser_mappo.parse_known_args()
+        self.args_mappo.N = 196  # the number of agents
         # self.args_mappo.obs_dim_n = [self.env.observation_space[i].shape[0] for i in range(self.args.n)]  # obs dimensions of n agents
         # self.args_mappo.action_dim_n = [self.env.action_space[i].n for i in range(self.args.n)]  # actions dimensions of n agents
         # only for homogenous agents environments like spread in mpe,all agents have the same dimension of observation space and action space
-        self.args_mappo.obs_dim = 768  # the dimensions of an agent's observation space
+        self.args_mappo.state_dim = 768*2  # the dimensions of an agent's observation space
+        self.args_mappo.obs_dim = 768
         self.args_mappo.action_dim = 2  # the dimensions of an agent's action space
+        self.args_mappo.K_epochs = 4
+        self.args_mappo.episode = batch_size
+        # in this case, episode_step = 3
+        # every episode, the agent only need to make decision in layer[3,6,9]
+        self.train_agent = train_agent
+        # self.args_mappo.episode_step = 3 
         self.agent_n = MAPPO(self.args_mappo)
         self.replay_buffer = ReplayBuffer(self.args_mappo) 
         device = "cuda" if torch.cuda.is_available() else "cpu"
+        # self.mappo_device = torch.device('cuda:4')
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.agent_n.actor.to(device)
+        self.agent_n.critic.to(device)
         
         # self.ppo_device = torch.device('cuda:5')
         # self.agent.actor_net.to(self.ppo_device)
@@ -455,19 +465,23 @@ hem to be on GPU p_rate (float): attention dropout rate
         # mask = torch.tensor(mask, dtype=torch.int64)
 
         token_depth = 0
-        train_agent = True
+        # train_agent = True
         # del self.buffer["state"][:]
         # del self.buffer["action"][:]
         # del self.buffer["action_prob"][:]
         # del self.buffer["state_next"][:]
         # del self.buffer["token_keep_ratio"][:]
         self.buffer = {
-            "state":[], #[block_num, batch_size, token_num, token_dim]
-            "state_next":[],
-            "action":[],
-            "action_prob":[],
+            "state_n":[], #[block_num, batch_size, token_num, token_dim]
+            "v_n":[],
+            "state_next_n":[],
+            "v_next_n":[],
+            "cls_token":[],
+            "action_n":[],
+            "action_prob_n":[],
             "mask":[],
-            "token_keep_ratio":[]
+            "token_keep_ratio":[],
+            "done_n":[]
         }
 
         for i, block in enumerate(self.blocks):
@@ -476,23 +490,36 @@ hem to be on GPU p_rate (float): attention dropout rate
             # -> [64, 197, 168]
             # size of action:[batch_size, token_num] -> [64, 197]
             # size of action_prob: [batch_size, token_num, action_dim] -> [64, 197, 2]
+            
+            # in mask and action, 0 means the agent/token is died/discarded
+            # in mask and action, 1 means the agent/token is alive/adopted
+            device_2 = next(block.parameters()).device
             if i in [3,6,9]:
                 with torch.no_grad():
-                    action, action_prob = self.agent_n.select_action_batch(x.detach())
+                    device_1 = next(self.agent_n.actor.parameters()).device
+                    action_n, action_prob_n = self.agent_n.choose_action(x.detach()[:,1:token_num,:],False)
 
-                mask = torch.where(mask==0, mask, action)
+                mask_without_cls = mask[:,1:token_num]
+                mask[:,1:token_num] = torch.where(mask_without_cls==0, mask_without_cls, action_n)
                 mask[:, 0] = 1
                 
                 out = torch.unique(mask, return_counts=True)
                  
-                if train_agent:
-                    self.buffer["state"].append(x.detach())
-                    self.buffer["action"].append(action.detach())
-                    self.buffer["action_prob"].append(action_prob.detach())
-                    self.buffer["mask"].append(mask.detach())
+                if self.train_agent:
+                    self.buffer["state_n"].append(x.detach()[:,1:token_num,:])
+                    v_n = self.agent_n.get_value(x.detach())
+                    self.buffer["v_n"].append(v_n)
+                    self.buffer["action_n"].append(action_n.detach())
+                    self.buffer["action_prob_n"].append(action_prob_n.detach())
+                    self.buffer["cls_token"].append(x.detach()[:,0,:])
+                    # self.buffer["mask"].append(mask.detach())
                     x = block.forward(x, mask)
-                    self.buffer["state_next"].append(x.detach())
-                if not train_agent:
+                    self.buffer["state_next_n"].append(x.detach()[:,1:token_num,:])
+                    v_next_n = self.agent_n.get_value(x.detach())
+                    self.buffer["v_next_n"].append(v_next_n)
+                    done_n = 1-mask
+                    self.buffer["done_n"].append(done_n[:,1:token_num])
+                if not self.train_agent:
                     x = block.forward(x, mask)
 
             if i not in [3,6,9]:
