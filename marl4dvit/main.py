@@ -505,6 +505,7 @@ def main(args):
     
     if args.fine_tune:
         args.epochs = 30
+
     for epoch in range(args.start_epoch, args.epochs):
         torch.cuda.empty_cache()
         if args.distributed:

@@ -4,7 +4,8 @@ import torch.nn.functional as F
 from torch.distributions import Categorical
 from torch.utils.data.sampler import *
 import numpy as np
-
+import time
+from tensorboardX import SummaryWriter
 
 # Trick 8: orthogonal initialization
 def orthogonal_init(layer, gain=1.0):
@@ -68,22 +69,25 @@ class Actor_MLP(nn.Module):
     def __init__(self, args, actor_input_dim):
         super(Actor_MLP, self).__init__()
         self.fc1 = nn.Linear(actor_input_dim, args.mlp_hidden_dim)
-        self.fc2 = nn.Linear(args.mlp_hidden_dim, args.mlp_hidden_dim)
-        self.fc3 = nn.Linear(args.mlp_hidden_dim, args.action_dim)
+        self.fc2 = nn.Linear(args.mlp_hidden_dim, 256)
+        self.fc3 = nn.Linear(256, 64)
+        self.fc4 = nn.Linear(64, args.action_dim)
         self.activate_func = [nn.Tanh(), nn.ReLU()][args.use_relu]
 
         if args.use_orthogonal_init:
             print("------use_orthogonal_init------")
             orthogonal_init(self.fc1)
             orthogonal_init(self.fc2)
-            orthogonal_init(self.fc3, gain=0.01)
+            orthogonal_init(self.fc3)
+            orthogonal_init(self.fc4, gain=0.01)
 
     def forward(self, actor_input):
         # When 'choose_action': actor_input.shape=(N, actor_input_dim), prob.shape=(N, action_dim)
         # When 'train':         actor_input.shape=(mini_batch_size, episode_limit, N, actor_input_dim), prob.shape(mini_batch_size, episode_limit, N, action_dim)
         x = self.activate_func(self.fc1(actor_input))
         x = self.activate_func(self.fc2(x))
-        prob = torch.softmax(self.fc3(x), dim=-1)
+        x = self.activate_func(self.fc3(x))
+        prob = torch.softmax(self.fc4(x), dim=-1)
         return prob
 
 
@@ -91,21 +95,24 @@ class Critic_MLP(nn.Module):
     def __init__(self, args, critic_input_dim):
         super(Critic_MLP, self).__init__()
         self.fc1 = nn.Linear(critic_input_dim, args.mlp_hidden_dim)
-        self.fc2 = nn.Linear(args.mlp_hidden_dim, args.mlp_hidden_dim)
-        self.fc3 = nn.Linear(args.mlp_hidden_dim, 1)
+        self.fc2 = nn.Linear(args.mlp_hidden_dim, 256)
+        self.fc3 = nn.Linear(256, 64)
+        self.fc4 = nn.Linear(64, 1)
         self.activate_func = [nn.Tanh(), nn.ReLU()][args.use_relu]
         if args.use_orthogonal_init:
             print("------use_orthogonal_init------")
             orthogonal_init(self.fc1)
             orthogonal_init(self.fc2)
             orthogonal_init(self.fc3)
+            orthogonal_init(self.fc4)
 
     def forward(self, critic_input):
         # When 'get_value': critic_input.shape=(N, critic_input_dim), value.shape=(N, 1)
         # When 'train':     critic_input.shape=(mini_batch_size, episode_limit, N, critic_input_dim), value.shape=(mini_batch_size, episode_limit, N, 1)
         x = self.activate_func(self.fc1(critic_input))
         x = self.activate_func(self.fc2(x))
-        value = self.fc3(x)
+        x = self.activate_func(self.fc3(x))
+        value = self.fc4(x)
         return value
 
 
@@ -134,6 +141,10 @@ class MAPPO:
         self.use_rnn = args.use_rnn
         self.add_agent_id = args.add_agent_id
         self.use_value_clip = args.use_value_clip
+        timestamp = time.time()
+        formatted_time = time.strftime("%Y-%m-%d %H:%M:%S",time.localtime(timestamp))
+        self.writer = SummaryWriter('./runs/Agent/loss_{}'.format(formatted_time))
+        self.training_step = 0
 
         # get the input dimension of actor and critic
         self.actor_input_dim = args.obs_dim
@@ -152,6 +163,8 @@ class MAPPO:
             self.critic = Critic_MLP(args, self.critic_input_dim)
 
         self.ac_parameters = list(self.actor.parameters()) + list(self.critic.parameters())
+        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=self.lr)
+        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(),lr=self.lr)
         if self.set_adam_eps:
             print("------set adam eps------")
             self.ac_optimizer = torch.optim.Adam(self.ac_parameters, lr=self.lr, eps=1e-5)
@@ -228,26 +241,39 @@ class MAPPO:
     def train(self, replay_buffer, total_steps):
         batch = replay_buffer.get_training_data()  # get training data
         
+        # done_n = 1 means dead
+        # done_episode = 1 means ends of episode, conclude dead, win
+        # or reach the max episode_step
         # Calculate the advantage using GAE
         adv = []
         gae = 0
         with torch.no_grad():  # adv and td_target have no gradient
             # deltas = batch['r_n'] + self.gamma * batch['v_n'][:, 1:] * (1 - batch['done_n']) - batch['v_n'][:, :-1]  # deltas.shape=(batch_size,episode_limit,N)
-            deltas = batch['r_n'] + self.gamma * batch['v_n_'] * (1 - batch['done_n']) - batch['v_n']  # deltas.shape=(batch_size,episode_limit,N)
-            for t in reversed(range(self.episode_limit)):
-                gae = deltas[:, t] + self.gamma * self.lamda * gae
-                adv.insert(0, gae)
-            adv = torch.stack(adv, dim=1)  # adv.shape(batch_size,episode_limit,N)
-            # v_target = adv + batch['v_n'][:, :-1]  # v_target.shape(batch_size,episode_limit,N)
-            v_target = adv + batch['v_n']  # v_target.shape(batch_size,episode_limit,N)
-            if self.use_adv_norm:  # Trick 1: advantage normalization
-                adv = ((adv - adv.mean()) / (adv.std() + 1e-5))
+            # deltas = batch['r_n'] + self.gamma * batch['v_n_'] * (1 - batch['done_n']) - batch['v_n']  # deltas.shape=(batch_size,episode_limit,N)
+            deltas = batch['r_n'] + self.gamma * batch['v_n_'] * (1 - batch['died_win']) - batch['v_n']  # deltas.shape=(batch_size,episode_limit,N)
+            # for t in reversed(range(self.episode_limit)):
+            #     temp = batch['done_n']
+            #     gae = deltas[:, t] + self.gamma * self.lamda * gae *(1-batch['done_episode'][:, t])
+            #     # gae = deltas[:, t] + self.gamma * self.lamda * gae * (1-batch['done_episode'][:, t])
+            #     # gae = deltas[:, t] + self.gamma * self.lamda * gae
+            #     adv.insert(0, gae)
+            # adv = torch.stack(adv, dim=1)  # adv.shape(batch_size,episode_limit,N)
+            # # v_target = adv + batch['v_n'][:, :-1]  # v_target.shape(batch_size,episode_limit,N)
+            # v_target = adv + batch['v_n']  # v_target.shape(batch_size,episode_limit,N)
+            # if self.use_adv_norm:  # Trick 1: advantage normalization
+            #     adv = ((adv - adv.mean()) / (adv.std() + 1e-5))
+
+            adv = deltas.detach()
+            # if self.use_adv_norm:  # Trick 1: advantage normalization
+            #     adv = ((adv - adv.mean()) / (adv.std() + 1e-5))
+            v_target = adv + batch['v_n']
 
         """
             Get actor_inputs and critic_inputs
             actor_inputs.shape=(batch_size, max_episode_len, N, actor_input_dim)
             critic_inputs.shape=(batch_size, max_episode_len, N, critic_input_dim)
         """
+        # [64,3,196,768] [64,3,196,1536]
         actor_inputs, critic_inputs = self.get_inputs(batch)
 
         # Optimize policy for K epochs:
@@ -283,6 +309,7 @@ class MAPPO:
                 ratios = torch.exp(a_logprob_n_now - batch['a_logprob_n'][index].detach())  # ratios.shape=(mini_batch_size, episode_limit, N)
                 surr1 = ratios * adv[index]
                 surr2 = torch.clamp(ratios, 1 - self.epsilon, 1 + self.epsilon) * adv[index]
+                actor_loss = -torch.min(surr1, surr2)
                 actor_loss = -torch.min(surr1, surr2) - self.entropy_coef * dist_entropy
 
                 if self.use_value_clip:
@@ -293,19 +320,62 @@ class MAPPO:
                     critic_loss = torch.max(values_error_clip ** 2, values_error_original ** 2)
                 else:
                     critic_loss = (values_now - v_target[index]) ** 2
+                    max_0 = torch.max(critic_loss)
+                    min_0 = torch.min(critic_loss)
+                    max_1 = torch.max(values_now)
+                    min_1 = torch.min(values_now)
+                    max_2 = torch.max(v_target[index])
+                    min_2 = torch.min(v_target[index])
 
                 self.ac_optimizer.zero_grad()
-                ac_loss = actor_loss.mean() + critic_loss.mean()
-                ac_loss.backward()
-                if self.use_grad_clip:  # Trick 7: Gradient clip
-                    torch.nn.utils.clip_grad_norm_(self.ac_parameters, 10.0)
-                self.ac_optimizer.step()
+                a = actor_loss.mean()
+                b = torch.mean(actor_loss)
+                c = critic_loss.mean()
+                d = torch.mean(critic_loss)
+                max_d = torch.max(critic_loss)
+                min_d = torch.min(critic_loss)
+                sum_d = torch.sum(critic_loss)
+
+                # ac_loss = actor_loss.mean() + critic_loss.mean()
+                # ac_loss.backward()
+                # if self.use_grad_clip:  # Trick 7: Gradient clip
+                #     torch.nn.utils.clip_grad_norm_(self.ac_parameters, 10.0)
+                # self.ac_optimizer.step()
+
+                # for param in self.actor.parameters():
+                #     if param.grad is None:
+                #         print(f"Gradient for  actor parameter is 'None'.")
+                #         print(self.training_step)
+                # for param in self.critic.parameters():
+                #     if param.grad is None:
+                #         print(f"Gradient for critic parameter is 'None'.")
+                #         print(self.training_step)
+                        # print(f"Gradient for parameter {name} is not 'None'.")
+
+                self.actor_optimizer.zero_grad()
+                actor_loss.mean().backward()
+                nn.utils.clip_grad_norm_(self.actor.parameters(), 10.0)
+                self.actor_optimizer.step()
+
+                self.critic_optimizer.zero_grad()
+                critic_loss.mean().backward()
+                nn.utils.clip_grad_norm_(self.critic.parameters(), 10.0)
+                self.critic_optimizer.step()
+                max_grad_value_1 = torch.max(torch.cat([param.grad.view(-1) for param in self.actor.parameters()]))
+                max_grad_value_2 = torch.max(torch.cat([param.grad.view(-1) for param in self.critic.parameters()]))
+
+                self.writer.add_scalar('loss/actor_grad', max_grad_value_1, global_step=self.training_step)
+                self.writer.add_scalar('loss/critic_grad', max_grad_value_2, global_step=self.training_step)
+                self.writer.add_scalar('loss/action_loss', actor_loss.mean(), global_step=self.training_step)
+                self.writer.add_scalar('loss/critic_loss', critic_loss.mean(), global_step=self.training_step)
+                self.training_step += 1
 
         if self.use_lr_decay:
             self.lr_decay(total_steps)
 
     def lr_decay(self, total_steps):  # Trick 6: learning rate Decay
         lr_now = self.lr * (1 - total_steps / self.max_train_steps)
+        self.writer.add_scalar('lr', lr_now, global_step=total_steps)
         for p in self.ac_optimizer.param_groups:
             p['lr'] = lr_now
 

@@ -27,6 +27,10 @@ class ReplayBuffer():
             'r_n': torch.empty([self.episode, self.episode_limit, self.N],device='cuda'),
             'done_n': torch.empty([self.episode, self.episode_limit, self.N],
                                   device='cuda'),
+            'died_win': torch.empty([self.episode, self.episode_limit, self.N],
+                                  device='cuda'),
+            'done_episode': torch.empty([self.episode, self.episode_limit, self.N],
+                                  device='cuda'),
             'cls_token':torch.empty([self.episode, self.episode_limit,
                                      self.obs_dim], device='cuda')
         }
@@ -56,6 +60,8 @@ class ReplayBuffer():
         self.buffer['a_logprob_n'][episode_num][episode_step] = transition.a_logprob_n
         self.buffer['r_n'][episode_num][episode_step] = transition.r_n
         self.buffer['done_n'][episode_num][episode_step] = transition.done_n
+        self.buffer['died_win'][episode_num][episode_step] = transition.died_win
+        self.buffer['done_episode'][episode_num][episode_step] = transition.done_episode
         self.buffer['cls_token'][episode_num][episode_step] = transition.cls_token
         self.total_step += 1
 

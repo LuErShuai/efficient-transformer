@@ -19,6 +19,11 @@ from collections import namedtuple
 import time
 import random 
 import numpy as np
+from tensorboardX import SummaryWriter
+timestamp = time.time()
+formatted_time = time.strftime("%Y-%m-%d %H:%M:%S",time.localtime(timestamp))
+writer = SummaryWriter('./runs/Agent/reward_{}'.format(formatted_time))
+sample_num = 0
 
 def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
@@ -31,13 +36,13 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 5
     # model.agent.reward_one_epoch = 0
+    global sample_num
     
     # torch.cuda.empty_cache()
-    sample_num = 0
     for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
 
         start = time.perf_counter()
-        sample_num += 1
+        sample_num = sample_num + 1
 
         samples = samples.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
@@ -73,7 +78,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
             Transition = namedtuple('Transition', ['episode_num','episode_step',
                                                    'obs_n', 'v_n',
                                                    'obs_n_', 'v_n_', 'a_n', 'a_logprob_n',
-                                                   'r_n', 'done_n', 'cls_token'])   
+                                                   'r_n', 'done_n', 'died_win',
+                                                   'done_episode', 'cls_token'])   
             # shape of buffer
 
             # self.buffer = {
@@ -115,6 +121,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
             # if agent i died, then there is no state_n in the next step
             # 1 in done_n_ means agent died
             # 0 in done_n_ means agent alive
+
             new_column = torch.zeros((1, done_n_.shape[1], done_n_.shape[2]),
                                     device=done_n_.device,dtype=done_n_.dtype)
             done_n_with_zeros = torch.cat((new_column, done_n_), axis=0)
@@ -138,6 +145,19 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
                 else:
                     classify_correct = False
 
+                # done_image = done_n_[:,i,:]
+                # keep = torch.unique(done_image, return_counts=True)
+                # a = keep[1][0]
+                # b = keep[1][0]+keep[1][1]
+                # keep_ratio = keep[1][0]/(keep[1][0]+keep[1][1])
+                token_depth = 0
+                a = 3*196
+                b = 3*torch.count_nonzero(action_n_[0,i,:]).item()
+                c = 3*torch.count_nonzero(action_n_[1,i,:]).item()
+                d = 3*torch.count_nonzero(action_n_[2,i,:]).item()
+                token_depth = a+b+c+d
+                token_keep_ratio = token_depth/(12*196)
+
                 for j in range(episode_step):
                     state_n = state_n_[j][i]
                     state_next_n = state_next_n_[j][i]
@@ -146,23 +166,35 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
                     action_prob_n = action_prob_n_[j][i]
                     # mask = mask_[j][i]
                     done_n = done_n_[j][i]
-                    keep = torch.unique(done_n, return_counts=True)
-                    reward_n = caculate_reward_per_image(classify_correct,j,done_n)
-                    batch_reward += reward_n
+                    done_n_last = done_n_[2][i]
+                    
+                    if j == 2:
+                        done_episode = torch.ones(done_n.shape)
+                        died_win = torch.ones(done_n.shape)
+                    else:
+                        done_episode = done_n
+                        died_win = done_n
+                    # keep = torch.unique(done_n, return_counts=True)
+
+                    reward_n = caculate_reward_per_image(classify_correct,j,
+                                                         done_n, token_keep_ratio)
+                    batch_reward += reward_n.sum()
                     v_n = v_n_[j][i]
                     v_next_n = v_next_n_[j][i]
 
                     # all information include 196 tokens
                     trans = Transition(i,j, state_n, v_n, state_next_n, v_next_n,
                                        action_n, action_prob_n, reward_n,done_n,
-                                       cls_token)
+                                       died_win, done_episode,cls_token)
                     model.replay_buffer.store_transition(trans)
                 model.replay_buffer.episode_num += 1
 
             print('batch_reward:', batch_reward)
+            writer.add_scalar('batch_reward', batch_reward, global_step=sample_num)
 
             model.agent_n.train(model.replay_buffer,
                                 model.replay_buffer.total_step)
+            model.replay_buffer.reset_buffer()
 
             # if utils.is_main_process() and model.agent.training_step > 50000:
             # if sample_num%100 == 0:
@@ -201,38 +233,143 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
     print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
-def caculate_reward_per_image(classify_correct, episode_step, done_n):
+def caculate_reward_per_image(classify_correct, episode_step, done_n,
+                              token_keep_ratio):
 
-    keep = torch.unique(done_n, return_counts=True)
-    keep_num = done_n.numel() - done_n.sum()
-    keep_num_ = done_n.numel()
-    keep_ratio = [0.8, 0.8*0.8, 0.8*0.8*0.8]
-    keep_ratio_ = keep_num/keep_num_
+    # keep = torch.unique(done_n, return_counts=True)
+    # keep_num = done_n.numel() - done_n.sum()
+    # died_num = done_n.sum()
+    # keep_num_ = done_n.numel()
+    # keep_ratio = [0.8, 0.8*0.8, 0.8*0.8*0.8]
+    # keep_ratio_ = keep_num/keep_num_
 
+    # agent_keep_correct = -1
+    # agent_died_correct = 1
+    # agent_keep_wrong = 1
+    # agent_died_wrong = -1
+
+    # agents_correct = 1
+    # agents_wrong = -1
+    # alpha = 0.1
+    # beta = 1
+    # if classify_correct:
+    #     reward_1 = (keep_num*agent_keep_correct + died_num*agent_died_correct)
+    # else:
+    #     reward_1 = 0
+    #     # reward_1 = (keep_num*agent_keep_wrong + died_num*agent_died_wrong)
+
+    # if episode_step == 2:
+    #     if classify_correct:
+    #         reward_2 = agents_correct
+    #     else:
+    #         reward_2 = agents_wrong
+    # else:
+    #     reward_2 = 0
+    #     
+
+    # reward = alpha*reward_1 + beta*reward_2
+    # reward = alpha*reward_1
+
+
+
+# def caculate_reward_per_image(classify_correct, episode_step, done_n_last,
+#                               keep_ratio_):
+# 
+#     done_n = done_n_last
+#     keep = torch.unique(done_n, return_counts=True)
+#     keep_num = done_n.numel() - done_n.sum()
+#     keep_num_ = done_n.numel()
+#     keep_ratio = [0.8, 0.8*0.8, 0.8*0.8*0.8]
+#     keep_ratio_ = keep_num/keep_num_
     # reward_2 = -math.exp(abs(keep_ratio - keep_ratio_))
-    if abs(keep_ratio[episode_step] - keep_ratio_) < 0.05:
-        reward_2 = 1.0
-    else:
-        reward_2 = -1.0
 
-    reward_for_classify = 1
-    if classify_correct:
-        reward_1 = 2.0 * reward_for_classify
-        if abs(keep_ratio[episode_step] - keep_ratio_) < 0.1:
-            reward_2 = 1.0
-        else:
-            reward_2 = -1.0
+    # reward_for_classify = 2
+    #if classify_correct:
+    #    reward_1 = 1.0
+    #else:
+    #    # reward_1 = -1.0 * reward_for_classify
+    #    # reward_1 = -1
+    #    # reward_1 = -1
+    #    reward_1 = 0
 
-    else:
-        # reward_1 = -1.0 * reward_for_classify
-        reward_1 = 0
-        reward_2 = 0
+    # reward_2 = keep_ratio_
+    # reward_2 = 2-math.exp(abs(keep_ratio[episode_step] - keep_ratio_))
+    # reward_2 = 0.5*(keep_ratio[episode_step] - keep_ratio_)
+    # reward_2 = 25*(math.exp((1-token_keep_ratio)) - 1) - 4*math.exp(token_keep_ratio)
+    # if abs(keep_ratio[episode_step] - keep_ratio_) < 0.05:
+    #     reward_2 = 1.0
+    # else:
+    #     reward_2 = -1.0
+    # died_num = done_n.sum()
+    # reward_1 = keep_num/196
+    # reward_2 = died_num/196
 
-    alpha = 0.5 
-    reward = alpha*reward_1 + (1-alpha)*reward_2
+
+
+    # if classify_correct:
+    #     reward_1 = 0.5
+    # else:
+    #     # reward_3 = -0.25
+    #     # reward_3 = -0.5
+    #     reward_3 = 0
+
+
+    # batch_reward = 0 ，导致没有进行训练
+    # if classify_correct:
+    #     reward_1 = 1.0 * reward_for_classify
+    #     if abs(keep_ratio[episode_step] - keep_ratio_) < 0.1:
+    #         reward_2 = 1.0
+    #     else:
+    #         reward_2 = -1.0
+    # else:
+    #     # reward_1 = -1.0 * reward_for_classify
+    #     reward_1 = 0
+    #     reward_2 = 0
+
+    # keep_ratio = keep_num/196
+    # reward_4 = 2 - (math.exp(abs(keep_ratio - 0.80)))
+
+    # alpha = 0.5 
+    # reward = alpha*reward_1 + (1-alpha)*reward_2
     # reward = reward_1
+    # reward = reward_1 * reward_2
+    # reward = reward_2
+    # reward = reward_2 - reward_1 + reward_3
+    # reward = 0.5*reward_4 + reward_3
+    # reward = reward_4
+    # 奖励为正，则增加保留的token数
+    # 奖励为负，则减少保留的token数
+    # 这个现象是否正确，背后的原因是什么？
+    # 正确的现象应为算法去追逐奖励最大化，从而导致所有agent迅速死亡
+    # 所有的agent在一个epoch之后确实都死亡了
+
     
-    return reward
+    # eta=1
+    # temp = token_keep_ratio - 0.7
+    # if temp < 0:
+    #     reward_1 = 1.2 - math.exp(eta*abs(token_keep_ratio - 0.7))
+    # elif 0 < temp < 0.1:
+    #     reward_1 = 2
+    # elif 0.1 < temp:
+    #     reward_1 = -1
+
+
+    eta=1
+    # reward = 1 - math.exp(eta*abs(token_keep_ratio - 0.8))
+    # reward = 1.5 - math.exp(eta*abs(token_keep_ratio - 0.7))
+    # reward = -abs(token_keep_ratio-0.7)
+    alive = 1-done_n
+    # reward = -0.01*alive.sum()
+    reward = 0.1*done_n.sum()
+    # reward = -0.01*done_n.sum()
+    
+
+    # if classify_correct:
+    #     reward_2 = 3
+    # else:
+    #     reward_2 = -1
+    # done_n[done_n == 0] = -1
+    return done_n
 
 
     
