@@ -12,6 +12,7 @@ class ReplayBuffer():
         self.total_step = 0
         self.buffer = None
         self.reset_buffer()
+        self.index = 0
 
     def reset_buffer(self):
         self.buffer = {
@@ -35,6 +36,7 @@ class ReplayBuffer():
                                      self.obs_dim], device='cuda')
         }
         self.episode_num = 0
+        self.index = 0
 
     # def store_transition(self, episode_step, obs_n, v_n, obs_n_, a_n,
     #                      a_logprob_n, r_n, done_n):
@@ -48,8 +50,11 @@ class ReplayBuffer():
     #     self.total_step += 1
 
     def store_transition(self,transition): 
+        if self.index >=  self.episode:
+            self.index = 0
         episode_step = transition.episode_step
-        episode_num = transition.episode_num
+        # episode_num = transition.episode_num
+        episode_num = self.index
         
 
         self.buffer['obs_n'][episode_num][episode_step] = transition.obs_n
@@ -64,6 +69,8 @@ class ReplayBuffer():
         self.buffer['done_episode'][episode_num][episode_step] = transition.done_episode
         self.buffer['cls_token'][episode_num][episode_step] = transition.cls_token
         self.total_step += 1
+        self.index += 1
+
 
     # def store_last_value(self, episode_step, v_n):
     #     self.buffer['v_n'][self.episode_num][episode_step]

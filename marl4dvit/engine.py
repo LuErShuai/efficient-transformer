@@ -61,6 +61,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
         # size of loss:[batch_size]
         loss_value = loss.item()
 
+        batch_num=0
         if args.train_agent:
             torch.cuda.empty_cache()
             end_1 = time.perf_counter()
@@ -142,8 +143,10 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
             for i in range(batch_size):
                 if outputs_max_index[i] == targets_max_index[i]:
                     classify_correct = True 
+                    batch_num+=1
                 else:
                     classify_correct = False
+                    continue
 
                 # done_image = done_n_[:,i,:]
                 # keep = torch.unique(done_image, return_counts=True)
@@ -188,13 +191,17 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
                                        died_win, done_episode,cls_token)
                     model.replay_buffer.store_transition(trans)
                 model.replay_buffer.episode_num += 1
+                if model.replay_buffer.episode_num == 64:
+                    break
 
-            print('batch_reward:', batch_reward)
-            writer.add_scalar('batch_reward', batch_reward, global_step=sample_num)
 
-            model.agent_n.train(model.replay_buffer,
-                                model.replay_buffer.total_step)
-            model.replay_buffer.reset_buffer()
+            # print(model.replay_buffer.episode_num)
+            if model.replay_buffer.episode_num >= 64:
+                model.agent_n.train(model.replay_buffer, model.replay_buffer.total_step)
+                print('batch_reward:', batch_reward/64)
+                writer.add_scalar('batch_reward', batch_reward/64, global_step=sample_num)
+                writer.add_scalar('token_keep_ratio', token_keep_ratio, global_step=sample_num)
+                model.replay_buffer.reset_buffer()
 
             # if utils.is_main_process() and model.agent.training_step > 50000:
             # if sample_num%100 == 0:
@@ -354,13 +361,12 @@ def caculate_reward_per_image(classify_correct, episode_step, done_n,
     #     reward_1 = -1
 
 
-    eta=1
     # reward = 1 - math.exp(eta*abs(token_keep_ratio - 0.8))
     # reward = 1.5 - math.exp(eta*abs(token_keep_ratio - 0.7))
     # reward = -abs(token_keep_ratio-0.7)
     alive = 1-done_n
     # reward = -0.01*alive.sum()
-    reward = 0.1*done_n.sum()
+    # reward = 0.1*done_n.sum()
     # reward = -0.01*done_n.sum()
     
 
@@ -369,8 +375,22 @@ def caculate_reward_per_image(classify_correct, episode_step, done_n,
     # else:
     #     reward_2 = -1
     # done_n[done_n == 0] = -1
-    return done_n
+    reward_1 = 0.0
+    if classify_correct:
+        reward_1 = 1
 
+    reward_2 = done_n
+    reward_3 = 1-done_n
+
+    eta=1
+    beta = 0.1
+    # reward = eta*reward_1 + beta*reward_2
+    # reward = eta*reward_1 - beta*reward_3
+    reward = 0.3 - beta*reward_3
+    # if not classify_correct:
+    #     reward = torch.zeros_like(done_n, dtype=torch.float32)
+    # return 1-done_n
+    return reward
 
     
     
