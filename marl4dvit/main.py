@@ -38,6 +38,8 @@ def get_args_parser():
     # Model parameters
     parser.add_argument('--model', default='rl4dvit_base_patch16_224', type=str, metavar='MODEL',
                         help='Name of model to train')
+    parser.add_argument('--model_base', default='deit_base_patch16_224', type=str, metavar='MODEL',
+                        help='Name of model to train')
     parser.add_argument('--input-size', default=224, type=int, help='images input size')
 
     parser.add_argument('--drop', type=float, default=0.0, metavar='PCT',
@@ -275,6 +277,16 @@ def main(args):
         batch_size=args.batch_size,
         train_agent=args.train_agent
     )
+    model_base = create_model(
+        args.model_base,
+        pretrained=False,
+        num_classes=args.nb_classes,
+        drop_rate=args.drop,
+        drop_path_rate=args.drop_path,
+        drop_block_rate=None,
+        args=args
+    )
+            
 
 
     if args.finetune:
@@ -336,6 +348,7 @@ def main(args):
             print('no patch embed')
             
     model.to(device)
+    model_base.to(device)
 
     # close ema for model training
     model_ema = None
@@ -451,8 +464,15 @@ def main(args):
             checkpoint = torch.load(args.resume, map_location='cpu')
 
 
-        checkpoint_deit_model = checkpoint['model']
+        # model_base.load_state_dict(checkpoint['model'])
+
         state_dict = model.state_dict()
+        state_dict_base = model_base.state_dict()
+        for name in state_dict_base:
+            state_dict_base[name] = checkpoint['model'][name]
+        model_base.load_state_dict(state_dict_base)
+
+        checkpoint_deit_model = checkpoint['model']
         if args.distributed:
             state_dict = model.module.state_dict()
 
@@ -512,7 +532,7 @@ def main(args):
             data_loader_train.sampler.set_epoch(epoch)
 
         train_stats = train_one_epoch(
-            model, criterion, data_loader_train,
+            model, model_base, criterion, data_loader_train,
             optimizer, device, epoch, loss_scaler,
             args.clip_grad, model_ema, mixup_fn,
             set_training_mode=args.train_mode,  # keep in eval mode for deit finetuning / train mode for training and deit III finetuning

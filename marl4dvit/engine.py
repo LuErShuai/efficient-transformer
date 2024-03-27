@@ -25,7 +25,7 @@ formatted_time = time.strftime("%Y-%m-%d %H:%M:%S",time.localtime(timestamp))
 writer = SummaryWriter('./runs/Agent/reward_{}'.format(formatted_time))
 sample_num = 0
 
-def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
+def train_one_epoch(model: torch.nn.Module, model_base:torch.nn.Module, criterion: DistillationLoss,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, loss_scaler, max_norm: float = 0,
                     model_ema: Optional[ModelEma] = None, mixup_fn: Optional[Mixup] = None,
@@ -56,6 +56,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
         with torch.cuda.amp.autocast():
             outputs = model(samples)
             loss = criterion(samples, outputs, targets)
+            outputs_base = model_base(samples)
         
 
         # size of loss:[batch_size]
@@ -69,6 +70,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
             # classify_results = outputs - targets
             _, outputs_max_index = outputs.max(dim=1)
             _, targets_max_index = targets.max(dim=1)
+            _, outputs_base_max_index = outputs_base.max(dim=1)
             # self.buffer = 
             # {
             #     "state":[], -> [block_num, batch_size, token_num, token_dim]
@@ -141,12 +143,16 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
             batch_reward = 0
 
             for i in range(batch_size):
+                # if vit classify wrong, abandon this trajectory
+                if outputs_base_max_index[i] != targets_max_index[i]:
+                    continue
+
+                # tell if dvit classify correctly
                 if outputs_max_index[i] == targets_max_index[i]:
                     classify_correct = True 
                     batch_num+=1
                 else:
                     classify_correct = False
-                    continue
 
                 # done_image = done_n_[:,i,:]
                 # keep = torch.unique(done_image, return_counts=True)
@@ -375,18 +381,21 @@ def caculate_reward_per_image(classify_correct, episode_step, done_n,
     # else:
     #     reward_2 = -1
     # done_n[done_n == 0] = -1
-    reward_1 = 0.0
+    reward_1 = 0
     if classify_correct:
         reward_1 = 1
 
     reward_2 = done_n
     reward_3 = 1-done_n
+    reward_4 = (1 - token_keep_ratio)*torch.ones_like(done_n, dtype=torch.float32)
 
     eta=1
-    beta = 0.1
+    beta = 0.6
+    
     # reward = eta*reward_1 + beta*reward_2
     # reward = eta*reward_1 - beta*reward_3
-    reward = 0.3 - beta*reward_3
+    reward = eta*reward_1 + beta*reward_4
+    # reward = 0.3 - beta*reward_3
     # if not classify_correct:
     #     reward = torch.zeros_like(done_n, dtype=torch.float32)
     # return 1-done_n
