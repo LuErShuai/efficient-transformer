@@ -18,7 +18,7 @@ from timm.optim import create_optimizer
 from timm.utils import NativeScaler, get_state_dict, ModelEma
 
 from datasets import build_dataset
-from engine import train_one_epoch, evaluate
+from engine import train_one_epoch, evaluate, evaluate_
 from losses import DistillationLoss
 from samplers import RASampler
 from augment import new_data_aug_generator
@@ -172,7 +172,7 @@ def get_args_parser():
                         help='device to use for training / testing')
     parser.add_argument('--seed', default=0, type=int)
     parser.add_argument('--resume', default='', help='resume from checkpoint')
-    parser.add_argument('--resume_ppo',action='store_true')
+    parser.add_argument('--resume_mappo',action='store_true')
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='start epoch')
     parser.add_argument('--eval', action='store_true', help='Perform evaluation only')
@@ -284,7 +284,7 @@ def main(args):
         drop_rate=args.drop,
         drop_path_rate=args.drop_path,
         drop_block_rate=None,
-        args=args
+        # args=args
     )
             
 
@@ -468,30 +468,32 @@ def main(args):
 
         state_dict = model.state_dict()
         state_dict_base = model_base.state_dict()
+
         for name in state_dict_base:
             state_dict_base[name] = checkpoint['model'][name]
         model_base.load_state_dict(state_dict_base)
+
+        for name in state_dict:
+            state_dict[name] = checkpoint['model'][name]
+        model.load_state_dict(state_dict)
 
         checkpoint_deit_model = checkpoint['model']
         if args.distributed:
             state_dict = model.module.state_dict()
 
-        checkpoint_ppo_actor = None
-        if args.resume_ppo and os.path.exists('./param/net_param/actor_net.pkl'):
-            checkpoint_ppo_actor = torch.load('./param/net_param/actor_net.pkl',
-                                    map_location='cpu')
-        checkpoint_ppo_critic = None
-        if args.resume_ppo and os.path.exists('./param/net_param/critic_net.pkl'):
-            checkpoint_ppo_critic = torch.load('./param/net_param/critic_net.pkl',
-                                    map_location='cpu')
+        if args.resume_mappo and os.path.exists('./param/MAPPO_ACTOR.pkl'):
+            model.agent_n.load_agent_n_actor()
+        if args.resume_mappo and os.path.exists('./param/MAPPO_CRITIC.pkl'):
+            model.agent_n.load_agent_n_critic()
 
-        for name in state_dict:
-            if 'agent' not in name:
-                state_dict[name] = checkpoint['model'][name]
-            if 'agent.actor' in name and checkpoint_ppo_actor is not None:
-                state_dict[name] = checkpoint_ppo_actor[name[16:]]
-            if 'agent.critic' in name and checkpoint_ppo_critic is not None:
-                state_dict[name] = checkpoint_ppo_critic[name[17:]]
+
+        # for name in state_dict:
+        #     if 'agent' not in name:
+        #         state_dict[name] = checkpoint['model'][name]
+            # if 'agent.actor' in name and checkpoint_ppo_actor is not None:
+            #     state_dict[name] = checkpoint_ppo_actor[name[16:]]
+            # if 'agent.critic' in name and checkpoint_ppo_critic is not None:
+            #     state_dict[name] = checkpoint_ppo_critic[name[17:]]
         if args.distributed:
             print('Load param for distributed PPO')
             model.module.load_state_dict(state_dict)
@@ -511,12 +513,13 @@ def main(args):
                 loss_scaler.load_state_dict(checkpoint['scaler'])
         lr_scheduler.step(args.start_epoch)
 
+    # model.agent_n.save_agent_n()
+
     if args.eval:
-        test_stats = evaluate(data_loader_val, model, device)
+        test_stats = evaluate_(data_loader_val, model, model_base, device)
+        # test_stats = evaluate(data_loader_val, model_base, device)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
         return
-
-
 
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
@@ -532,7 +535,7 @@ def main(args):
             data_loader_train.sampler.set_epoch(epoch)
 
         train_stats = train_one_epoch(
-            model, model_base, criterion, data_loader_train,
+            model, model_base, criterion, data_loader_train, data_loader_val,
             optimizer, device, epoch, loss_scaler,
             args.clip_grad, model_ema, mixup_fn,
             set_training_mode=args.train_mode,  # keep in eval mode for deit finetuning / train mode for training and deit III finetuning
@@ -554,7 +557,8 @@ def main(args):
                 }, checkpoint_path)
              
 
-        test_stats = evaluate(data_loader_val, model, device)
+        test_stats = evaluate_(data_loader_val, model, model_base, device)
+        # test_stats = evaluate(data_loader_val, model_base, device)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
         
         if max_accuracy < test_stats["acc1"]:
@@ -571,16 +575,13 @@ def main(args):
                         'scaler': loss_scaler.state_dict(),
                         'args': args,
                     }, checkpoint_path)
-            
+            # model.agent_n.save_agent_n() 
         print(f'Max accuracy: {max_accuracy:.2f}%')
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                      **{f'test_{k}': v for k, v in test_stats.items()},
                      'epoch': epoch,
                      'n_parameters': n_parameters}
-        
-        
-        
         
         if args.output_dir and utils.is_main_process():
             with (output_dir / "log.txt").open("a") as f:

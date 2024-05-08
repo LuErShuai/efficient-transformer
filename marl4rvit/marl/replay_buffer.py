@@ -80,8 +80,11 @@ class ReplayBuffer():
     def get_training_data(self):
         batch = {}
         for key in self.buffer.keys():
-            if key =='a_n':
-                batch[key] = torch.tensor(self.buffer[key], dtype=torch.long)
+            if key =='a_n' or key == 'done_n':
+                # batch[key] = torch.tensor(self.buffer[key], dtype=torch.long)
+                # batch[key] = torch.tensor(self.buffer[key], dtype=torch.int64)
+                batch[key] = self.buffer[key].clone().detach().to(torch.int64)
             else:
-                batch[key] = torch.tensor(self.buffer[key], dtype=torch.float32)
+                # batch[key] = torch.tensor(self.buffer[key], dtype=torch.float32)
+                batch[key] = self.buffer[key].clone().detach().to(torch.float32)
         return batch

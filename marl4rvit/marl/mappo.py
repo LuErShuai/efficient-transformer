@@ -141,6 +141,7 @@ class MAPPO:
         self.use_rnn = args.use_rnn
         self.add_agent_id = args.add_agent_id
         self.use_value_clip = args.use_value_clip
+        self.rand_die_ratio = args.rand_die_ratio
         timestamp = time.time()
         formatted_time = time.strftime("%Y-%m-%d %H:%M:%S",time.localtime(timestamp))
         self.writer = SummaryWriter('./runs/Agent/loss_{}'.format(formatted_time))
@@ -200,6 +201,22 @@ class MAPPO:
                 dist = Categorical(probs=prob)
                 a_n = dist.sample()
                 a_logprob_n = dist.log_prob(a_n)
+            # in mask and action, 0 means the agent/token is died/discarded
+            # in mask and action, 1 means the agent/token is alive/adopted
+                if self.rand_die_ratio != 1:
+                    mask = np.random.choice([0,1],size=a_n.shape,p=[self.rand_die_ratio,
+                                                                  1-self.rand_die_ratio])
+                    mask_tensor = torch.tensor(mask, device=a_n.device)
+                    a_n = mask_tensor
+                    # shape = a_n.shape
+                    # total_elements = shape[0]*shape[1]
+                    # num_ones = int((1-self.rand_die_ratio)*total_elements)
+                    # one_indices = torch.randint(0, total_elements,(num_ones,))
+                    # mask = torch.zeros(shape, device=a_n.device,dtype=torch.int64)
+                    # 
+                    # mask.view(-1)[one_indices] = 1
+                    # a_n = mask
+
                 # return a_n.numpy(), a_logprob_n.numpy()
                 return a_n, a_logprob_n
 
@@ -383,10 +400,19 @@ class MAPPO:
         actor_inputs, critic_inputs = [], []
         # shape of obs_n: [batch_size, episode_step, token_num, token_dim]
         # shape of cls_token: [batch_size, episode_step, token_dim]
+        # shape of done_n: [batch_size, episode_step, token_num]
+        # shape of cls_token_n: [batch_size, epiosde_step, token_num, token_dim]
+        # if a token is died, then the input for critic should be consisit of zero
+        # and token id, that means both the local feature and global feature should
+        # be zero. @MAPPO PAPER
+
         obs_n = batch['obs_n']
         cls_token = batch['cls_token']
+        done_n = batch['done_n']
         cls_token = cls_token.reshape(cls_token.shape[0],cls_token.shape[1],1,cls_token.shape[2])
         cls_token_n = cls_token.repeat([1,1,obs_n.shape[2],1])
+        done_n_expand = done_n.unsqueeze(-1).expand(-1,-1,-1,cls_token_n.shape[3])
+        cls_token_n[done_n_expand==0] = 0
 
         state_global = torch.cat((obs_n, cls_token_n), axis=-1)
 
@@ -402,8 +428,24 @@ class MAPPO:
         critic_inputs = torch.cat([x for x in critic_inputs], dim=-1)  # critic_inputs.shape=(batch_size, episode_limit, N, critic_input_dim)
         return actor_inputs, critic_inputs
 
-    def save_model(self, env_name, number, seed, total_steps):
+    def save_model_(self, env_name, number, seed, total_steps):
         torch.save(self.actor.state_dict(), "./model/MAPPO_actor_env_{}_number_{}_seed_{}_step_{}k.pth".format(env_name, number, seed, int(total_steps / 1000)))
 
-    def load_model(self, env_name, number, seed, step):
+    def load_model_(self, env_name, number, seed, step):
         self.actor.load_state_dict(torch.load("./model/MAPPO_actor_env_{}_number_{}_seed_{}_step_{}k.pth".format(env_name, number, seed, step)))
+
+    def eval_(self):
+        self.actor.eval()
+        self.critic.eval()
+
+    def save_agent_n(self):
+        torch.save(self.actor.state_dict(), "./param/MAPPO_ACTOR.pkl")
+        torch.save(self.critic.state_dict(), "./param/MAPPO_CRITIC.pkl")
+
+    def load_agent_n_actor(self):
+        state_dict_actor = torch.load("./param/MAPPO_ACTOR.pkl")
+        self.actor.load_state_dict(state_dict_actor)
+
+    def load_agent_n_critic(self):
+        state_dict_critic = torch.load("./param/MAPPO_CRITIC.pkl")
+        self.critic.load_state_dict(state_dict_critic)
