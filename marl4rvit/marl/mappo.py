@@ -5,6 +5,7 @@ from torch.distributions import Categorical
 from torch.utils.data.sampler import *
 import numpy as np
 import time
+import math
 from tensorboardX import SummaryWriter
 
 # Trick 8: orthogonal initialization
@@ -69,10 +70,14 @@ class Actor_MLP(nn.Module):
     def __init__(self, args, actor_input_dim):
         super(Actor_MLP, self).__init__()
         self.fc1 = nn.Linear(actor_input_dim, args.mlp_hidden_dim)
+        # self.dropout1 = nn.Dropout(args.dropout_rate)
+        # self.dropout2 = nn.Dropout(args.dropout_rate)
+        # self.dropout3 = nn.Dropout(args.dropout_rate)
         self.fc2 = nn.Linear(args.mlp_hidden_dim, 256)
         self.fc3 = nn.Linear(256, 64)
         self.fc4 = nn.Linear(64, args.action_dim)
         self.activate_func = [nn.Tanh(), nn.ReLU()][args.use_relu]
+        # self.residual = nn.Linear(actor_input_dim, 64)
 
         if args.use_orthogonal_init:
             print("------use_orthogonal_init------")
@@ -87,6 +92,7 @@ class Actor_MLP(nn.Module):
         x = self.activate_func(self.fc1(actor_input))
         x = self.activate_func(self.fc2(x))
         x = self.activate_func(self.fc3(x))
+        # x = x + self.residual(actor_input)
         prob = torch.softmax(self.fc4(x), dim=-1)
         return prob
 
@@ -94,11 +100,16 @@ class Actor_MLP(nn.Module):
 class Critic_MLP(nn.Module):
     def __init__(self, args, critic_input_dim):
         super(Critic_MLP, self).__init__()
+        # self.dropout1 = nn.Dropout(args.dropout_rate)
+        # self.dropout2 = nn.Dropout(args.dropout_rate)
+        # self.dropout3 = nn.Dropout(args.dropout_rate)
         self.fc1 = nn.Linear(critic_input_dim, args.mlp_hidden_dim)
         self.fc2 = nn.Linear(args.mlp_hidden_dim, 256)
         self.fc3 = nn.Linear(256, 64)
         self.fc4 = nn.Linear(64, 1)
         self.activate_func = [nn.Tanh(), nn.ReLU()][args.use_relu]
+        # self.residual = nn.Linear(critic_input_dim, 64)
+
         if args.use_orthogonal_init:
             print("------use_orthogonal_init------")
             orthogonal_init(self.fc1)
@@ -109,9 +120,14 @@ class Critic_MLP(nn.Module):
     def forward(self, critic_input):
         # When 'get_value': critic_input.shape=(N, critic_input_dim), value.shape=(N, 1)
         # When 'train':     critic_input.shape=(mini_batch_size, episode_limit, N, critic_input_dim), value.shape=(mini_batch_size, episode_limit, N, 1)
+        # x = self.activate_func(self.dropout1(self.fc1(critic_input)))
+        # x = self.activate_func(self.dropout2(self.fc2(x)))
+        # x = self.activate_func(self.dropout3(self.fc3(x)))
         x = self.activate_func(self.fc1(critic_input))
         x = self.activate_func(self.fc2(x))
         x = self.activate_func(self.fc3(x))
+
+        # x = x + self.residual(critic_input)
         value = self.fc4(x)
         return value
 
@@ -220,8 +236,9 @@ class MAPPO:
                 # return a_n.numpy(), a_logprob_n.numpy()
                 return a_n, a_logprob_n
 
-    def get_value(self, s):
+    def get_value(self, s, cls):
         # shape of input s : [64, 196, 768]
+        # shape of cls :     [64, 768]
         # shape of output v_n : [64, 196]
         # we need to construct a global feature as the input of critic
         # for each agent, the global feature is concat(token, cls_token)
@@ -233,13 +250,16 @@ class MAPPO:
             critic_inputs = []
             # Because each agent has the same global state, we need to repeat the global state 'N' times.
             # s = torch.tensor(s, dtype=torch.float32).unsqueeze(0).repeat(self.N, 1)  # (state_dim,)-->(N,state_dim)
-            state_n = s[:,1:197,:]
-            cls_token = s[:,0,:].reshape(state_n.shape[0], 1, state_n.shape[2])
+            state_n = s
+            cls_token_n = cls
+            # cls_token = cls.reshape(state_n.shape[0], 1, state_n.shape[2])
             # state_n = obs_n
             # cls_token = cls_token.reshape(state_n.shape[0], 1, state_n.shape[2])
-            cls_token_n = cls_token.repeat([1, state_n.shape[1],1])
+            # cls_token_n = cls_token.repeat([1, state_n.shape[1],1])
             
             state_global = torch.cat((state_n, cls_token_n), axis=-1)
+            # state_global = state_n
+            # state_global = cls_token_n
 
             critic_inputs.append(state_global)
             if self.add_agent_id:  # Add an one-hot vector to represent the agent_id
@@ -267,7 +287,10 @@ class MAPPO:
         with torch.no_grad():  # adv and td_target have no gradient
             # deltas = batch['r_n'] + self.gamma * batch['v_n'][:, 1:] * (1 - batch['done_n']) - batch['v_n'][:, :-1]  # deltas.shape=(batch_size,episode_limit,N)
             # deltas = batch['r_n'] + self.gamma * batch['v_n_'] * (1 - batch['done_n']) - batch['v_n']  # deltas.shape=(batch_size,episode_limit,N)
-            deltas = batch['r_n'] + self.gamma * batch['v_n_'] * (1 - batch['died_win']) - batch['v_n']  # deltas.shape=(batch_size,episode_limit,N)
+            deltas = batch['r_n'] + self.gamma * batch['v_n_'] - batch['v_n']  # deltas.shape=(batch_size,episode_limit,N)
+            # deltas = batch['r_n'] + batch['v_n_'] - batch['v_n']  # deltas.shape=(batch_size,episode_limit,N)
+            # deltas = batch['r_n']
+            # deltas = batch['r_n'] + self.gamma * batch['v_n_'] * (1 - batch['died_win']) - batch['v_n']  # deltas.shape=(batch_size,episode_limit,N)
             # for t in reversed(range(self.episode_limit)):
             #     temp = batch['done_n']
             #     gae = deltas[:, t] + self.gamma * self.lamda * gae *(1-batch['done_episode'][:, t])
@@ -391,9 +414,20 @@ class MAPPO:
             self.lr_decay(total_steps)
 
     def lr_decay(self, total_steps):  # Trick 6: learning rate Decay
+        # # linear decay
         lr_now = self.lr * (1 - total_steps / self.max_train_steps)
+        # self.writer.add_scalar('lr', lr_now, global_step=total_steps)
+        # for p in self.ac_optimizer.param_groups:
+        #     p['lr'] = lr_now
+
+        final_lr = 0
+#         lr_now = final_lr + 0.5*(self.lr - final_lr)*(1 + math.cos(math.pi*total_steps/self.max_train_steps))
         self.writer.add_scalar('lr', lr_now, global_step=total_steps)
         for p in self.ac_optimizer.param_groups:
+            p['lr'] = lr_now
+        for p in self.actor_optimizer.param_groups:
+            p['lr'] = lr_now
+        for p in self.critic_optimizer.param_groups:
             p['lr'] = lr_now
 
     def get_inputs(self, batch):
@@ -407,14 +441,18 @@ class MAPPO:
         # be zero. @MAPPO PAPER
 
         obs_n = batch['obs_n']
-        cls_token = batch['cls_token']
+        cls_token_n = batch['cls_token']
         done_n = batch['done_n']
-        cls_token = cls_token.reshape(cls_token.shape[0],cls_token.shape[1],1,cls_token.shape[2])
-        cls_token_n = cls_token.repeat([1,1,obs_n.shape[2],1])
-        done_n_expand = done_n.unsqueeze(-1).expand(-1,-1,-1,cls_token_n.shape[3])
-        cls_token_n[done_n_expand==0] = 0
+        # cls_token = cls_token.reshape(cls_token.shape[0],cls_token.shape[1],1,cls_token.shape[2])
+        # cls_token_n = cls_token.repeat([1,1,obs_n.shape[2],1])
+        # done_n_expand = done_n.unsqueeze(-1).expand(-1,-1,-1,cls_token_n.shape[3])
+        # cls_token_n[done_n_expand==0] = 0
 
+        # obs_n = batch['obs_n']
+        # cls_token_n = batch['cls_token']
         state_global = torch.cat((obs_n, cls_token_n), axis=-1)
+        # state_global = obs_n
+        # state_global = cls_token_n
 
         actor_inputs.append(obs_n)
         critic_inputs.append(state_global)

@@ -32,7 +32,7 @@ class ReplayBuffer():
                                   device='cuda'),
             'done_episode': torch.empty([self.episode, self.episode_limit, self.N],
                                   device='cuda'),
-            'cls_token':torch.empty([self.episode, self.episode_limit,
+            'cls_token':torch.empty([self.episode, self.episode_limit,self.N,
                                      self.obs_dim], device='cuda')
         }
         self.episode_num = 0

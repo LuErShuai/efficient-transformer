@@ -24,7 +24,7 @@ from samplers import RASampler
 from augment import new_data_aug_generator
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 import utils
 
@@ -109,7 +109,7 @@ def get_args_parser():
     
     parser.add_argument('--train-mode', action='store_true')
     parser.add_argument('--no-train-mode', action='store_false', dest='train_mode')
-    parser.set_defaults(train_mode=True)
+    parser.set_defaults(train_mode=False)
 
     parser.add_argument('--train_deit', action='store_true')
     parser.set_defaults(train_deit=False)
@@ -522,6 +522,7 @@ def main(args):
         return
 
     print(f"Start training for {args.epochs} epochs")
+    torch.cuda.empty_cache()
     start_time = time.time()
     max_accuracy = 0.0
     max_reward = 0.0
@@ -607,6 +608,14 @@ def main(args):
 
 
 if __name__ == '__main__':
+    # 检查是否有可用的CUDA设备
+    if torch.cuda.is_available():
+        # torch.cuda.set_device(2)
+        current_gpu = torch.cuda.current_device()
+        gpu_name = torch.cuda.get_device_name(current_gpu)
+        print(f"当前使用的GPU设备是: {current_gpu}, 名称是:{gpu_name}")
+    else:
+        print("没有可用的CUDA设备")
     parser = argparse.ArgumentParser('DeiT training and evaluation script', parents=[get_args_parser()])
     args, remain_args = parser.parse_known_args()
     if args.output_dir:

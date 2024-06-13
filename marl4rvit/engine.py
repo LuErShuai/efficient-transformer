@@ -33,8 +33,12 @@ def train_one_epoch(model: torch.nn.Module, model_base:torch.nn.Module, criterio
                     data_loader: Iterable,data_loader_val: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, loss_scaler, max_norm: float = 0,
                     model_ema: Optional[ModelEma] = None, mixup_fn: Optional[Mixup] = None,
-                    set_training_mode=True, args = None):
-    model.train(set_training_mode)
+                    set_training_mode=False, args = None):
+    # model.train(set_training_mode)
+    # model_base.train(set_training_mode)
+    # model.eval()
+    # model.agent_n.eval_()
+    # model_base.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     header = 'Epoch: [{}]'.format(epoch)
@@ -45,6 +49,7 @@ def train_one_epoch(model: torch.nn.Module, model_base:torch.nn.Module, criterio
     num_1 = 0
     num_2 = 0
     batch_num = 1
+    keep_ratio = [0,0,0]
     # torch.cuda.empty_cache()
     for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
 
@@ -115,16 +120,31 @@ def train_one_epoch(model: torch.nn.Module, model_base:torch.nn.Module, criterio
             # shape of new_column: [1, 64, 197]
             # died_ = np.array(buffers["done_n"])
 
+            done_n_ = torch.stack(buffers["done_n"])
+            died_ = torch.stack(buffers["done_n"])
+
             state_n_ = torch.stack(buffers["state_n"])
-            v_n_ = torch.stack(buffers["v_n"])
+            # v_n_ = torch.stack(buffers["v_n"])
             state_next_n_ = torch.stack(buffers["state_next_n"])
-            v_next_n_ = torch.stack(buffers["v_next_n"])
+            # v_next_n_ = torch.stack(buffers["v_next_n"])
             cls_token_ = torch.stack(buffers["cls_token"])
+            cls_token = cls_token_.reshape(cls_token_.shape[0],cls_token_.shape[1],1,
+                                          cls_token_.shape[2])
+            cls_token_n = cls_token.repeat([1,1,state_n_.shape[2],1])
+
+            cls_token_next_ = torch.stack(buffers["cls_token_"])
+            cls_token_next = cls_token_next_.reshape(cls_token_next_.shape[0],
+                                                     cls_token_next_.shape[1],1,
+                                          cls_token_next_.shape[2])
+            cls_token_next_n = cls_token_next.repeat([1,1,state_n_.shape[2],1])
+            # done_n_expand = done_n.unsqueeze(-1).expand(-1,-1,-1,cls_token_n.shape[3])
+            # cls_token_n[done_n_expand==0] = 0
+            cls_token_n_state = cls_token_n.clone()
+            cls_token_n_state_next = cls_token_next_n.clone()
+
             action_n_ = torch.stack(buffers["action_n"])
             action_prob_n_ = torch.stack(buffers["action_prob_n"])
             # mask_ = torch.stack(buffers["mask"])
-            done_n_ = torch.stack(buffers["done_n"])
-            died_ = torch.stack(buffers["done_n"])
 
 
             # zero out observation for died agent according to mask
@@ -138,8 +158,26 @@ def train_one_epoch(model: torch.nn.Module, model_base:torch.nn.Module, criterio
             done_n_with_zeros = torch.cat((new_column, done_n_), axis=0)
             done_n_with_zeros_ = done_n_with_zeros[:done_n_.shape[0],:,:]
         
-            state_n_[done_n_with_zeros_==1] = 0
-            state_next_n_[done_n_==1] = 0
+            # state_n_[done_n_with_zeros_==1] = 0
+            # cls_token_n_state[done_n_with_zeros_==1] = 0
+            # state_next_n_[done_n_==1] = 0
+            # cls_token_n_state_next[done_n_==1] = 0
+
+            # after zero out ,cacluate the value of v_next_n_
+            v_n_list = []
+            for i in range(state_n_.shape[0]):
+                temp = model.agent_n.get_value(state_n_[i], cls_token_n_state[i])
+                v_n_list.append(temp)
+            v_n_ = torch.stack(v_n_list)
+
+            v_next_n_list = []
+            for i in range(state_next_n_.shape[0]):
+                temp = model.agent_n.get_value(state_next_n_[i],
+                                               cls_token_n_state_next[i])
+                v_next_n_list.append(temp)
+            v_next_n_ = torch.stack(v_next_n_list)
+            # v_next_n_ = torch.stack(buffers["v_next_n"])
+
 
             batch_size = buffers["state_n"][0].shape[0]
             # episode_step  = buffers["state_n"][0].shape[1]
@@ -181,12 +219,19 @@ def train_one_epoch(model: torch.nn.Module, model_base:torch.nn.Module, criterio
                 # c = 3*torch.count_nonzero(action_n_[1,i,:]).item()
                 # d = 3*torch.count_nonzero(action_n_[2,i,:]).item()
                 # token_depth = a+b+c+d
+                a = torch.count_nonzero(action_n_[0,i,:]).item()/196
+                b = torch.count_nonzero(action_n_[1,i,:]).item()/196
+                c = torch.count_nonzero(action_n_[2,i,:]).item()/196
+                keep_ratio[0] = a
+                keep_ratio[1] = b
+                keep_ratio[2] = c
+
                 token_keep_ratio = token_depth/(12*196)
 
                 for j in range(episode_step):
                     state_n = state_n_[j][i]
                     state_next_n = state_next_n_[j][i]
-                    cls_token = cls_token_[j][i]
+                    cls_token = cls_token_n_state[j][i]
                     action_n = action_n_[j][i]
                     action_prob_n = action_prob_n_[j][i]
                     # mask = mask_[j][i]
@@ -218,7 +263,7 @@ def train_one_epoch(model: torch.nn.Module, model_base:torch.nn.Module, criterio
                     break
 
             print(str(num_1) + ':' + str(num_2))
-            print(str(batch_reward/196) +':'+str(num_temp))
+            print(str(batch_reward/(episode_step*196)) +':'+str(num_temp))
 
             # print(model.replay_buffer.episode_num)
             if model.replay_buffer.episode_num >= 64:
@@ -248,6 +293,7 @@ def train_one_epoch(model: torch.nn.Module, model_base:torch.nn.Module, criterio
             log_stats = {
                      **{f'test_{k}': v for k, v in test_stat.items()},
                      'batch_num': batch_num,
+                     'keep_ratio': keep_ratio,
                     }
         
             output_dir = Path(args.output_dir)
@@ -290,7 +336,8 @@ def caculate_reward_per_image(classify_correct, classify_correct_base, episode_s
 
     keep_num = done_n.numel() - done_n.sum()
     keep_num_ = done_n.numel()
-    keep_ratio = [0.6, 0.6*0.6, 0.6*0.6*0.6]
+    keep_ratio = [0.7, 0.7*0.7, 0.7*0.7*0.7]
+    # keep_ratio = [0.65, 0.65*0.65, 0.65*0.65*0.65]
     # keep_ratio = [0.8, 0.8*0.8, 0.8*0.8*0.8]
     # keep_ratio = [0.4, 0.4*0.4, 0.4*0.4*0.4]
     keep_ratio_ = keep_num/keep_num_
@@ -305,21 +352,22 @@ def caculate_reward_per_image(classify_correct, classify_correct_base, episode_s
     #     reward_2 = torch.ones_like(done_n, dtype=done_n.dtype)
     # return (1-done_n)*reward/keep_num  + reward_2
     if delta >= 0:
-        reward = 0.5*done_n*reward/keep_num
+        reward = 0.5*done_n*reward
     if delta < 0:
-        reward = (1 - done_n)*reward/keep_num
+        reward = (1 - done_n)*reward
     reward_2 = torch.zeros_like(done_n, dtype=done_n.dtype)
     if classify_correct:
         # reward_2 = 0.5*(1-done_n)*torch.ones_like(done_n, dtype=done_n.dtype)/keep_num
         # reward_2 = (1-done_n)*torch.ones_like(done_n, dtype=done_n.dtype)
         # reward_2 = (1-done_n)*torch.ones_like(done_n, dtype=done_n.dtype)/keep_num
-        reward_2 = torch.ones_like(done_n, dtype=done_n.dtype)/keep_num_
+        reward_2 = torch.ones_like(done_n, dtype=done_n.dtype)
+        # reward_2 = torch.ones_like(done_n, dtype=done_n.dtype)
     # else:
     #     reward_2 = -0.1*torch.ones_like(done_n, dtype=done_n.dtype)
 
     
-    return reward_2
-    # return reward + reward_2
+    # return reward_2
+    return reward + reward_2
 
 
 def caculate_reward_per_step(num_block, classify_correct, action, token_keep_ratio,
@@ -481,14 +529,15 @@ def accuracy_(output, output_base, target, topk=(1,)):
     correct_base_1 = correct_base[:1]
     correct_1 = correct[:1]
     correct_base_1[correct_1] = True
-    Acc_1 = correct_base_1.reshape(-1).float().sum(0) * 100 / batch_size
+    Acc_1 = correct_base_1.reshape(-1).float().sum(0) * 100 / correct_base_1.size(1)
 
     correct_base_5 = correct_base[:5]
     correct_5 = correct[:5]
+    a = correct_base_5.sum(dim=0)
     all_false_images = (correct_base_5.sum(dim=0) == 0).nonzero(as_tuple=True)[0]
     for index in all_false_images:
         correct_base_5[:, index] = correct_5[:, index]
-    Acc_5 = correct_base_5.reshape(-1).float().sum(0) * 100 / batch_size
+    Acc_5 = correct_base_5.reshape(-1).float().sum(0) * 100 / correct_base_5.size(1)
     return [Acc_1, Acc_5]
 
 @torch.no_grad()
@@ -500,7 +549,7 @@ def evaluate_ppo(data_loader_val, model, model_base, device):
 
     # switch to evaluation mode
     model.eval()
-    model.agent_n.eval_()
+    # model.agent_n.eval_()
     model_base.eval()
 
     for images, target in metric_logger.log_every(data_loader_val, 10, header):
