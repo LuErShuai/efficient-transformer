@@ -190,12 +190,11 @@ def train_one_epoch(model: torch.nn.Module, model_base:torch.nn.Module, criterio
 
             num_temp = 0
             for i in range(batch_size):
-                # if vit classify wrong, abandon this trajectory
+                # when training with only wrong smaples,   if vit classify wrong, abandon this trajectory
                 if outputs_base_max_index[i] != targets_max_index[i]:
                     classify_correct_base = False
                     num_1 +=1
                     num_temp +=1
-                    # continue
                 else:
                     classify_correct_base = True
                     continue
@@ -214,17 +213,15 @@ def train_one_epoch(model: torch.nn.Module, model_base:torch.nn.Module, criterio
                 # b = keep[1][0]+keep[1][1]
                 # keep_ratio = keep[1][0]/(keep[1][0]+keep[1][1])
                 token_depth = 0
-                # a = 3*196
-                # b = 3*torch.count_nonzero(action_n_[0,i,:]).item()
-                # c = 3*torch.count_nonzero(action_n_[1,i,:]).item()
-                # d = 3*torch.count_nonzero(action_n_[2,i,:]).item()
-                # token_depth = a+b+c+d
-                a = torch.count_nonzero(action_n_[0,i,:]).item()/196
-                b = torch.count_nonzero(action_n_[1,i,:]).item()/196
-                c = torch.count_nonzero(action_n_[2,i,:]).item()/196
-                keep_ratio[0] = a
-                keep_ratio[1] = b
-                keep_ratio[2] = c
+                a = 3*196
+                b = 3*torch.count_nonzero(action_n_[0,i,:]).item()
+                c = 3*torch.count_nonzero(action_n_[1,i,:]).item()
+                d = 3*torch.count_nonzero(action_n_[2,i,:]).item()
+                token_depth = a+b+c+d
+
+                keep_ratio[0] = torch.count_nonzero(action_n_[0,i,:]).item()/196
+                keep_ratio[1] = torch.count_nonzero(action_n_[1,i,:]).item()/196
+                keep_ratio[2] = torch.count_nonzero(action_n_[2,i,:]).item()/196
 
                 token_keep_ratio = token_depth/(12*196)
 
@@ -285,6 +282,8 @@ def train_one_epoch(model: torch.nn.Module, model_base:torch.nn.Module, criterio
             test_stat = evaluate_ppo(data_loader_val, model, model_base, device)
             acc_1 = test_stat["acc1"]
             acc_5 = test_stat["acc5"]
+            acc_1_ = test_stat["acc1_"]
+            acc_5_ = test_stat["acc5_"]
             if max_accuracy < acc_1:
                 max_accuracy = acc_1
                 writer.add_scalar('acc_1', acc_1, global_step=int(batch_num/500))
@@ -336,8 +335,10 @@ def caculate_reward_per_image(classify_correct, classify_correct_base, episode_s
 
     keep_num = done_n.numel() - done_n.sum()
     keep_num_ = done_n.numel()
-    keep_ratio = [0.7, 0.7*0.7, 0.7*0.7*0.7]
+    # keep_ratio = [0.6, 0.6*0.6, 0.6*0.6*0.6]
     # keep_ratio = [0.65, 0.65*0.65, 0.65*0.65*0.65]
+    keep_ratio = [0.35, 0.35*0.35, 0.35*0.35*0.35]
+    # keep_ratio = [0.7, 0.7*0.7, 0.7*0.7*0.7]
     # keep_ratio = [0.8, 0.8*0.8, 0.8*0.8*0.8]
     # keep_ratio = [0.4, 0.4*0.4, 0.4*0.4*0.4]
     keep_ratio_ = keep_num/keep_num_
@@ -361,13 +362,27 @@ def caculate_reward_per_image(classify_correct, classify_correct_base, episode_s
         # reward_2 = (1-done_n)*torch.ones_like(done_n, dtype=done_n.dtype)
         # reward_2 = (1-done_n)*torch.ones_like(done_n, dtype=done_n.dtype)/keep_num
         reward_2 = torch.ones_like(done_n, dtype=done_n.dtype)
-        # reward_2 = torch.ones_like(done_n, dtype=done_n.dtype)
-    # else:
-    #     reward_2 = -0.1*torch.ones_like(done_n, dtype=done_n.dtype)
+    reward_3 = 0
+    if classify_correct_base:
+        if not classify_correct:
+            reward_3 = -torch.ones_like(done_n, dtype=done_n.dtype)
+     
+      # reward_2 = torch.ones_like(done_n, dtype=done_n.dtype)
+    else:
+        reward_2 = -0.1*torch.ones_like(done_n, dtype=done_n.dtype)
 
     
     # return reward_2
-    return reward + reward_2
+    # return reward + reward_2 + reward_3
+    return reward_2
+
+    # reward_1 = -0.01
+    # if classify_correct:
+    #     reward_1 = 1
+
+    # reward_2 = (1-token_keep_ratio)*torch.ones_like(done_n,dtype=torch.float32)
+
+    # return reward_1 + 0.5*reward_2
 
 
 def caculate_reward_per_step(num_block, classify_correct, action, token_keep_ratio,
@@ -531,6 +546,8 @@ def accuracy_(output, output_base, target, topk=(1,)):
     correct_base_1[correct_1] = True
     Acc_1 = correct_base_1.reshape(-1).float().sum(0) * 100 / correct_base_1.size(1)
 
+    ACC_1_ = correct_1.reshape(-1).float().sum(0)*100/correct_1.size(1)
+
     correct_base_5 = correct_base[:5]
     correct_5 = correct[:5]
     a = correct_base_5.sum(dim=0)
@@ -538,7 +555,8 @@ def accuracy_(output, output_base, target, topk=(1,)):
     for index in all_false_images:
         correct_base_5[:, index] = correct_5[:, index]
     Acc_5 = correct_base_5.reshape(-1).float().sum(0) * 100 / correct_base_5.size(1)
-    return [Acc_1, Acc_5]
+    ACC_5_ = correct_5.reshape(-1).float().sum(0)*100/correct_5.size(1)
+    return [Acc_1, Acc_5, ACC_1_, ACC_5_]
 
 @torch.no_grad()
 def evaluate_ppo(data_loader_val, model, model_base, device):
@@ -562,12 +580,15 @@ def evaluate_ppo(data_loader_val, model, model_base, device):
             loss = criterion(output, target)
             outputs_base = model_base(images)
 
-        acc1, acc5 = accuracy_(output, outputs_base, target, topk=(1, 5))
+        acc1, acc5, acc1_, acc5_ = accuracy_(output, outputs_base, target, topk=(1, 5))
 
         batch_size = images.shape[0]
         metric_logger.update(loss=loss.item())
         metric_logger.meters['acc1'].update(acc1.item(), n=batch_size)
         metric_logger.meters['acc5'].update(acc5.item(), n=batch_size)
+        metric_logger.meters['acc1_'].update(acc1_.item(), n=batch_size)
+        metric_logger.meters['acc5_'].update(acc5_.item(), n=batch_size)
+
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print('* Acc@1 {top1.global_avg:.3f} Acc@5 {top5.global_avg:.3f} loss {losses.global_avg:.3f}'
@@ -599,7 +620,7 @@ def evaluate_(data_loader, model, model_base, device):
             loss = criterion(output, target)
             outputs_base = model_base(images)
 
-        acc1, acc5 = accuracy_(output, outputs_base, target, topk=(1, 5))
+        acc1, acc5, acc1_, acc5_ = accuracy_(output, outputs_base, target, topk=(1, 5))
 
         batch_size = images.shape[0]
         metric_logger.update(loss=loss.item())

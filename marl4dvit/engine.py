@@ -25,6 +25,7 @@ formatted_time = time.strftime("%Y-%m-%d %H:%M:%S",time.localtime(timestamp))
 writer = SummaryWriter('./runs/Agent/reward_{}'.format(formatted_time))
 sample_num = 0
 
+
 def train_one_epoch(model: torch.nn.Module, model_base:torch.nn.Module, criterion: DistillationLoss,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, loss_scaler, max_norm: float = 0,
@@ -38,6 +39,7 @@ def train_one_epoch(model: torch.nn.Module, model_base:torch.nn.Module, criterio
     # model.agent.reward_one_epoch = 0
     global sample_num
     
+    batch_num = 1
     # torch.cuda.empty_cache()
     for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
 
@@ -62,7 +64,7 @@ def train_one_epoch(model: torch.nn.Module, model_base:torch.nn.Module, criterio
         # size of loss:[batch_size]
         loss_value = loss.item()
 
-        batch_num=0
+        # batch_num=0
         if args.train_agent:
             torch.cuda.empty_cache()
             end_1 = time.perf_counter()
@@ -150,7 +152,7 @@ def train_one_epoch(model: torch.nn.Module, model_base:torch.nn.Module, criterio
                 # tell if dvit classify correctly
                 if outputs_max_index[i] == targets_max_index[i]:
                     classify_correct = True 
-                    batch_num+=1
+                    # batch_num+=1
                 else:
                     classify_correct = False
 
@@ -163,7 +165,7 @@ def train_one_epoch(model: torch.nn.Module, model_base:torch.nn.Module, criterio
                 a = 3*196
                 b = 3*torch.count_nonzero(action_n_[0,i,:]).item()
                 c = 3*torch.count_nonzero(action_n_[1,i,:]).item()
-                d = 3*torch.count_nonzero(action_n_[2,i,:]).item()
+                d = 2*torch.count_nonzero(action_n_[2,i,:]).item()
                 token_depth = a+b+c+d
                 token_keep_ratio = token_depth/(12*196)
 
@@ -215,6 +217,9 @@ def train_one_epoch(model: torch.nn.Module, model_base:torch.nn.Module, criterio
             #     print(model.agent.total_steps)
             #     print("-------------------save ppo weight-------------------")
             #     # return
+
+        # global max_accuracy
+        # if batch_num%100 == 0:
 
 
         if not math.isfinite(loss_value):
@@ -381,7 +386,7 @@ def caculate_reward_per_image(classify_correct, episode_step, done_n,
     # else:
     #     reward_2 = -1
     # done_n[done_n == 0] = -1
-    reward_1 = 0
+    reward_1 = -0.01
     if classify_correct:
         reward_1 = 1
 
@@ -390,7 +395,7 @@ def caculate_reward_per_image(classify_correct, episode_step, done_n,
     reward_4 = (1 - token_keep_ratio)*torch.ones_like(done_n, dtype=torch.float32)
 
     eta=1
-    beta = 0.6
+    beta = 0.5
     
     # reward = eta*reward_1 + beta*reward_2
     # reward = eta*reward_1 - beta*reward_3

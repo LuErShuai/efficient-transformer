@@ -134,6 +134,7 @@ class Critic_MLP(nn.Module):
 
 class MAPPO:
     def __init__(self, args):
+        self.global_only = args.global_only
         self.N = args.N
         self.action_dim = args.action_dim
         self.obs_dim = args.obs_dim
@@ -257,7 +258,11 @@ class MAPPO:
             # cls_token = cls_token.reshape(state_n.shape[0], 1, state_n.shape[2])
             # cls_token_n = cls_token.repeat([1, state_n.shape[1],1])
             
-            state_global = torch.cat((state_n, cls_token_n), axis=-1)
+            if self.global_only:
+                state_global = cls_token_n
+            else:
+                state_global = torch.cat((state_n, cls_token_n), axis=-1)
+
             # state_global = state_n
             # state_global = cls_token_n
 
@@ -450,7 +455,11 @@ class MAPPO:
 
         # obs_n = batch['obs_n']
         # cls_token_n = batch['cls_token']
-        state_global = torch.cat((obs_n, cls_token_n), axis=-1)
+        if self.global_only:
+            state_global = cls_token_n
+        else:
+            state_global = torch.cat((state_n, cls_token_n), axis=-1)
+        # state_global = torch.cat((obs_n, cls_token_n), axis=-1)
         # state_global = obs_n
         # state_global = cls_token_n
 
