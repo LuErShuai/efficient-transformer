@@ -366,7 +366,7 @@ hem to be on GPU p_rate (float): attention dropout rate
         parser_mappo.add_argument("--use_reward_norm", type=bool, default=True, help="trick 3:reward normalization")
         parser_mappo.add_argument("--use_reward_scaling", type=bool, default=False, help="trick 4:reward scaling. here, we do not use it.")
         parser_mappo.add_argument("--entropy_coef", type=float, default=0.01, help="trick 5: policy entropy")
-        parser_mappo.add_argument("--use_lr_decay", type=bool, default=True, help="trick 6:learning rate decay")
+        parser_mappo.add_argument("--use_lr_decay", type=bool, default=False, help="trick 6:learning rate decay")
         parser_mappo.add_argument("--use_grad_clip", type=bool, default=True, help="trick 7: gradient clip")
         parser_mappo.add_argument("--use_orthogonal_init", type=bool, default=True, help="trick 8: orthogonal initialization")
         parser_mappo.add_argument("--set_adam_eps", type=float, default=True, help="trick 9: set adam epsilon=1e-5")
@@ -505,11 +505,12 @@ hem to be on GPU p_rate (float): attention dropout rate
                 
                 out = torch.unique(mask, return_counts=True)
                  
+                action_n_execute = mask[:,1:token_num]
                 if self.train_agent:
                     self.buffer["state_n"].append(x.detach()[:,1:token_num,:])
                     v_n = self.agent_n.get_value(x.detach())
                     self.buffer["v_n"].append(v_n)
-                    self.buffer["action_n"].append(action_n.detach())
+                    self.buffer["action_n"].append(action_n_execute.detach().clone())
                     self.buffer["action_prob_n"].append(action_prob_n.detach())
                     self.buffer["cls_token"].append(x.detach()[:,0,:])
                     # self.buffer["mask"].append(mask.detach())
@@ -525,10 +526,10 @@ hem to be on GPU p_rate (float): attention dropout rate
             if i not in [3,6,9]:
                 x = block.forward(x, mask)
 
-            token_depth += torch.count_nonzero(mask).item()
+            token_depth += torch.count_nonzero(mask[:,1:token_num]).item()
 
         print(token_depth)
-        token_keep_ratio = token_depth/(64*12*197)
+        token_keep_ratio = token_depth/(64*12*196)
         self.buffer["token_keep_ratio"].append(token_keep_ratio)
 
 

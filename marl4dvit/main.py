@@ -22,9 +22,13 @@ from engine import train_one_epoch, evaluate
 from losses import DistillationLoss
 from samplers import RASampler
 from augment import new_data_aug_generator
+from thop import profile
+from torchstat import stat
+from torchinfo import summary
+# from calflops import calculate_flops
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 
 import utils
 
@@ -367,7 +371,34 @@ def main(args):
                                                           find_unused_parameters=True)
         model_without_ddp = model.module
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    n_parameters_actor = sum(p.numel() for p in model.agent_n.actor.parameters() if p.requires_grad)
+    n_parameters_critic = sum(p.numel() for p in model.agent_n.critic.parameters() if p.requires_grad)
+    n_parameters += n_parameters_actor
+    n_parameters += n_parameters_critic
     print('number of params:', n_parameters)
+
+    # dummy_input_cpu = torch.randn(1, 3, 224, 224)
+    # dummy_input = dummy_input_cpu.to('cuda')
+    # flops, params = profile(model, inputs=(dummy_input,))
+
+    # print(f"FLOPs: {flops / 1e9:.2f} GFLOPs")  # Convert to GFLOPs
+    # print(f"Parameters: {params / 1e6:.2f} M")  # Convert to millions of parameters
+
+    # # flops, macs, params = calculate_flops(model, input_size=(1,3,244,244))
+    # # print(flops)
+    # # print(macs)
+    # # print(params)
+    # # summary(model, input_size=(1,2,224,224))
+    # # dummy_input_cpu = torch.randn(3, 224, 224)
+    # # dummy_input = dummy_input_cpu.to('cuda')
+    # # stat(model, dummy_input)
+
+    # dummy_input_cpu = torch.randn(1, 3, 224, 224)
+    # dummy_input = dummy_input_cpu.to('cuda')
+    # flops, params = profile(model_base, inputs=(dummy_input,))
+
+    # print(f"FLOPs: {flops / 1e9:.2f} GFLOPs")  # Convert to GFLOPs
+    # print(f"Parameters: {params / 1e6:.2f} M")  # Convert to millions of parameters
     if not args.unscale_lr:
         linear_scaled_lr = args.lr * args.batch_size * utils.get_world_size() / 512.0
         args.lr = linear_scaled_lr
@@ -532,7 +563,7 @@ def main(args):
             data_loader_train.sampler.set_epoch(epoch)
 
         train_stats = train_one_epoch(
-            model, model_base, criterion, data_loader_train,
+            model, model_base, criterion, data_loader_train, data_loader_val,
             optimizer, device, epoch, loss_scaler,
             args.clip_grad, model_ema, mixup_fn,
             set_training_mode=args.train_mode,  # keep in eval mode for deit finetuning / train mode for training and deit III finetuning

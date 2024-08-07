@@ -48,7 +48,7 @@ def train_one_epoch(model: torch.nn.Module, model_base:torch.nn.Module, criterio
     
     num_1 = 0
     num_2 = 0
-    batch_num = 1
+    batch_num = 0
     keep_ratio = [0,0,0]
     # torch.cuda.empty_cache()
     for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
@@ -197,7 +197,7 @@ def train_one_epoch(model: torch.nn.Module, model_base:torch.nn.Module, criterio
                     num_temp +=1
                 else:
                     classify_correct_base = True
-                    continue
+                    # continue
 
                 # tell if dvit classify correctly
                 if outputs_max_index[i] == targets_max_index[i]:
@@ -216,7 +216,7 @@ def train_one_epoch(model: torch.nn.Module, model_base:torch.nn.Module, criterio
                 a = 3*196
                 b = 3*torch.count_nonzero(action_n_[0,i,:]).item()
                 c = 3*torch.count_nonzero(action_n_[1,i,:]).item()
-                d = 3*torch.count_nonzero(action_n_[2,i,:]).item()
+                d = 2*torch.count_nonzero(action_n_[2,i,:]).item()
                 token_depth = a+b+c+d
 
                 keep_ratio[0] = torch.count_nonzero(action_n_[0,i,:]).item()/196
@@ -278,7 +278,7 @@ def train_one_epoch(model: torch.nn.Module, model_base:torch.nn.Module, criterio
             #     # return
 
         global max_accuracy
-        if batch_num%500 == 0:
+        if batch_num%1000 == 0:
             test_stat = evaluate_ppo(data_loader_val, model, model_base, device)
             acc_1 = test_stat["acc1"]
             acc_5 = test_stat["acc5"]
@@ -374,11 +374,16 @@ def caculate_reward_per_image(classify_correct, classify_correct_base, episode_s
     
     # return reward_2
     # return reward + reward_2 + reward_3
-    return reward_2
+    # return reward_2
 
-    # reward_1 = -0.01
-    # if classify_correct:
-    #     reward_1 = 1
+    
+    reward_7 = -0.01*torch.ones_like(done_n, dtype=done_n.dtype)
+    # reward_7 = 0.0*torch.ones_like(done_n, dtype=done_n.dtype)
+    if classify_correct:
+        # reward_7 = 1*torch.ones_like(done_n, dtype=done_n.dtype)
+        reward_7 = done_n
+
+    return reward_7
 
     # reward_2 = (1-token_keep_ratio)*torch.ones_like(done_n,dtype=torch.float32)
 

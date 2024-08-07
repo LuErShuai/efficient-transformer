@@ -188,6 +188,7 @@ class Attention(nn.Module):
         # size of attn:[batch_size, head_num, token_num, token_num]
         # -> [64, 12, 197, 197]
         attn = (q @ k.transpose(-2, -1)) * self.scale
+        # mask_temp = mask.unsqueeze(-1).expand(-1,-1,768)
 
         if mask is not None:
             # now we need to mask out all the attentions associated with this token
@@ -215,6 +216,7 @@ class Attention(nn.Module):
         a = temp.transpose(1,2) # [64,197,12,64]
         c = a.reshape(B, N, C)  # [64,197,768]
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        # x[mask_temp==0] = 0
         x = self.proj(x)
         x = self.proj_drop(x)
 
@@ -351,12 +353,18 @@ hem to be on GPU p_rate (float): attention dropout rate
         self.init_weights(weight_init)
 
         # self.layer_location = [0,3,6]
-        # self.layer_location_ = [6, 9, 11]
+        # self.layer_location_ = [3,6,9]
+        # self.layer_location = [0,1,2]
+        # self.layer_location_ = [3,6,9]
+        # self.layer_location = [3,6,9]
+        # self.layer_location_ = [4,7,10]
 
-        self.layer_location = [0]
-        self.layer_location_ = [1]
+        self.layer_location = [6,9,11]
+        self.layer_location_ = [7,10,11]
+        # self.layer_location = [0]
+        # self.layer_location_ = [1]
         parser_mappo = argparse.ArgumentParser("Hyperparameters Setting for MAPPO in Vit environment")
-        parser_mappo.add_argument("--max_train_steps", type=int, default=int(3e6), help=" Maximum number of training steps")
+        parser_mappo.add_argument("--max_train_steps", type=int, default=int(4e5), help=" Maximum number of training steps")
         parser_mappo.add_argument("--episode_limit", type=int, default=3, help="Maximum number of steps per episode")
         # parser_mappo.add_argument("--evaluate_freq", type=float, default=5000, help="Evaluate the policy every 'evaluate_freq' steps")
         # parser_mappo.add_argument("--evaluate_times", type=float, default=3, help="Evaluate times")
@@ -365,7 +373,7 @@ hem to be on GPU p_rate (float): attention dropout rate
         parser_mappo.add_argument("--mini_batch_size", type=int, default=64, help="minibatch size (the number of episodes)")
         parser_mappo.add_argument("--rnn_hidden_dim", type=int, default=64, help="the number of neurons in hidden layers of the rnn")
         parser_mappo.add_argument("--mlp_hidden_dim", type=int, default=1024, help="the number of neurons in hidden layers of the mlp")
-        parser_mappo.add_argument("--lr", type=float, default=5e-5, help="learning rate")
+        parser_mappo.add_argument("--lr", type=float, default=5e-6, help="learning rate")
         parser_mappo.add_argument("--gamma", type=float, default=0.99, help="discount factor")
         parser_mappo.add_argument("--lamda", type=float, default=0.95, help="gae parameter")
         parser_mappo.add_argument("--epsilon", type=float, default=0.2, help="gae parameter")
@@ -380,16 +388,22 @@ hem to be on GPU p_rate (float): attention dropout rate
         parser_mappo.add_argument("--set_adam_eps", type=float, default=True, help="trick 9: set adam epsilon=1e-5")
         parser_mappo.add_argument("--use_relu", type=float, default=False, help="whether to use relu, if false, we will use tanh")
         parser_mappo.add_argument("--use_rnn", type=bool, default=False, help="whether to use rnn")
-        parser_mappo.add_argument("--add_agent_id", type=float, default=True, help="whether to add agent_id. here, we do not use it.")
-        parser_mappo.add_argument("--use_value_clip", type=float, default=False, help="whether to use value clip.")
+        parser_mappo.add_argument("--add_agent_id", type=float, default=False, help="whether to add agent_id. here, we do not use it.")
+        parser_mappo.add_argument("--use_value_clip", type=float, default=True, help="whether to use value clip.")
         parser_mappo.add_argument("--rand_die_ratio", type=float, default=1,help="kill tokens randomly according ratio been given")
+        parser_mappo.add_argument("--dropout_rate", type=float, default=0.6,help="dropout rate to pervent overfitting")
+        parser_mappo.add_argument("--global_only", type=bool, default=True,help="determin whether to use gobal feature only as the input of the critic")
 
         self.args_mappo, remaining_args = parser_mappo.parse_known_args()
         self.args_mappo.N = 196  # the number of agents
         # self.args_mappo.obs_dim_n = [self.env.observation_space[i].shape[0] for i in range(self.args.n)]  # obs dimensions of n agents
         # self.args_mappo.action_dim_n = [self.env.action_space[i].n for i in range(self.args.n)]  # actions dimensions of n agents
         # only for homogenous agents environments like spread in mpe,all agents have the same dimension of observation space and action space
-        self.args_mappo.state_dim = 768*2  # the dimensions of an agent's observation space
+        if self.args_mappo.global_only:
+            self.args_mappo.state_dim = 768  # the dimensions of an agent's observation space
+        else:
+            self.args_mappo.state_dim = 768*2  # the dimensions of an agent's observation space
+        # self.args_mappo.state_dim = 768  # the dimensions of an agent's observation space
         self.args_mappo.obs_dim = 768
         self.args_mappo.action_dim = 2  # the dimensions of an agent's action space
         self.args_mappo.K_epochs = 4
@@ -487,6 +501,7 @@ hem to be on GPU p_rate (float): attention dropout rate
             "state_next_n":[],
             "v_next_n":[],
             "cls_token":[],
+            "cls_token_":[],
             "action_n":[],
             "action_prob_n":[],
             "mask":[],
@@ -494,6 +509,7 @@ hem to be on GPU p_rate (float): attention dropout rate
             "done_n":[]
         }
 
+        # x_temp = x.clone()
         for i, block in enumerate(self.blocks):
 
             # size of x: [bacth_size, token_num, token_dim]
@@ -507,19 +523,34 @@ hem to be on GPU p_rate (float): attention dropout rate
             # if i in [6,9,11]:
             # if i in [3,6,11]:
             # if i in [11]:
-            if i in self.layer_location_:
-                self.buffer["state_next_n"].append(x.detach()[:,1:token_num,:])
-                v_next_n = self.agent_n.get_value(x.detach())
-                self.buffer["v_next_n"].append(v_next_n)
+
+            # if i in [3,4,5,6,7,8,9,10]:
+            # if i in self.layer_location_:
+                # x_temp = block.forward(x_temp)
+                # x = block.forward(x, mask)
+                # self.buffer["state_next_n"].append(x_temp.detach()[:,1:token_num,:])
+                # self.buffer["cls_token"].append(x_temp.detach()[:,0,:])
+                # self.buffer["cls_token_"].append(x.detach()[:,0,:])
+
+                # self.buffer["state_next_n"].append(x.detach()[:,1:token_num,:])
+                # self.buffer["cls_token_"].append(x.detach()[:,0,:])
+            #     v_next_n = self.agent_n.get_value(x.detach())
+            #     self.buffer["v_next_n"].append(v_next_n)
 
             # if i in [3,6,9]:
             # if i in [0]:
+            
+
+            # x = block.forward(x)
+
             if i in self.layer_location:
+            # if i in [0,3,6]:
                 with torch.no_grad():
                     device_1 = next(self.agent_n.actor.parameters()).device
                     action_n, action_prob_n = self.agent_n.choose_action(x.detach()[:,1:token_num,:],False)
                     # temp = torch.unique(action_n, return_counts=True)
 
+                mask_temp = mask.clone()
                 mask_without_cls = mask[:,1:token_num]
                 mask[:,1:token_num] = torch.where(mask_without_cls==0, mask_without_cls, action_n)
                 mask[:, 0] = 1
@@ -529,26 +560,54 @@ hem to be on GPU p_rate (float): attention dropout rate
                 # out = torch.unique(mask, return_counts=True)
                  
                 if self.train_agent:
-                    self.buffer["state_n"].append(x.detach()[:,1:token_num,:])
-                    v_n = self.agent_n.get_value(x.detach())
-                    self.buffer["v_n"].append(v_n)
+                    # self.buffer["state_n"].append(x.detach()[:,1:token_num,:])
+                    # v_n = self.agent_n.get_value(x.detach())
+                    # self.buffer["v_n"].append(v_n)
                     # self.buffer["action_n"].append(action_n.detach())
                     self.buffer["action_n"].append(action_n_execute.detach().clone())
                     # self.buffer["action_n"].append(mask[:,1:token_num])
                     self.buffer["action_prob_n"].append(action_prob_n.detach())
-                    self.buffer["cls_token"].append(x.detach()[:,0,:])
                     # self.buffer["mask"].append(mask.detach())
+
+                    # self.buffer["cls_token"].append(x.detach()[:,0,:])
+                    # zero out  the value of tokens that been discard
+                    # mask_temp = mask.unsqueeze(-1).expand(-1,-1,768)
+                    # x[mask_temp==0] = 0
+
+                    # self.buffer["cls_token"].append(x.detach()[:,0,:])
+                    x_temp = x.clone()
+                    # x_temp = block.forward(x_temp, mask_temp)
+                    x_temp = block.forward(x_temp)
                     x = block.forward(x, mask)
-                    #self.buffer["state_next_n"].append(x.detach()[:,1:token_num,:])
+                    # self.buffer["cls_token"].append(x_temp.detach()[:,0,:])
+
+                    # mask_temp = mask.unsqueeze(-1).expand(-1,-1,768)
+                    # x_temp = x.clone()
+                    # x_temp[mask_temp==0] = 0
+                    self.buffer["state_n"].append(x_temp.detach()[:,1:token_num,:])
+                    self.buffer["cls_token"].append(x_temp.detach()[:,0,:])
+                    self.buffer["cls_token_"].append(x.detach()[:,0,:])
+                    self.buffer["state_next_n"].append(x.detach()[:,1:token_num,:])
                     #v_next_n = self.agent_n.get_value(x.detach())
                     #self.buffer["v_next_n"].append(v_next_n)
                     done_n = 1-mask
                     self.buffer["done_n"].append(done_n[:,1:token_num])
+
+                    # mask_temp = mask.unsqueeze(-1).expand(-1,-1,768)
+                    # x[mask_temp==0] = 0
+
+                    # self.buffer["state_next_n"].append(x.detach()[:,1:token_num,:])
+                    # self.buffer["state_next_n"].append(x.detach())
+
+                    # v_next_n = self.agent_n.get_value(x.detach())
+                    # self.buffer["v_next_n"].append(v_next_n)
                 if not self.train_agent:
                     x = block.forward(x, mask)
+                    # x = block.forward(x)
 
             if i not in self.layer_location:
                 x = block.forward(x, mask)
+                # x = block.forward(x)
 
             token_depth += torch.count_nonzero(mask).item()
 

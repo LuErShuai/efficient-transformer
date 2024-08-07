@@ -37,7 +37,7 @@
 # from .tresnet import *
 # from .vgg import *
 # from .visformer import *
-from .vision_transformer import *
+# from .vision_transformer import *
 from .deit import *
 
 # LuDaShuai added

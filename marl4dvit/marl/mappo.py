@@ -249,8 +249,9 @@ class MAPPO:
         gae = 0
         with torch.no_grad():  # adv and td_target have no gradient
             # deltas = batch['r_n'] + self.gamma * batch['v_n'][:, 1:] * (1 - batch['done_n']) - batch['v_n'][:, :-1]  # deltas.shape=(batch_size,episode_limit,N)
-            # deltas = batch['r_n'] + self.gamma * batch['v_n_'] * (1 - batch['done_n']) - batch['v_n']  # deltas.shape=(batch_size,episode_limit,N)
-            deltas = batch['r_n'] + self.gamma * batch['v_n_'] * (1 - batch['died_win']) - batch['v_n']  # deltas.shape=(batch_size,episode_limit,N)
+            deltas = batch['r_n'] + self.gamma * batch['v_n_'] * (1 - batch['done_n']) - batch['v_n']  # deltas.shape=(batch_size,episode_limit,N)
+            # deltas = batch['r_n'] + self.gamma * batch['v_n_'] * (1 - batch['died_win']) - batch['v_n']  # deltas.shape=(batch_size,episode_limit,N)
+            # deltas = batch['r_n'] + self.gamma * batch['v_n_'] - batch['v_n']  # deltas.shape=(batch_size,episode_limit,N)
             # for t in reversed(range(self.episode_limit)):
             #     temp = batch['done_n']
             #     gae = deltas[:, t] + self.gamma * self.lamda * gae *(1-batch['done_episode'][:, t])
@@ -407,3 +408,19 @@ class MAPPO:
 
     def load_model(self, env_name, number, seed, step):
         self.actor.load_state_dict(torch.load("./model/MAPPO_actor_env_{}_number_{}_seed_{}_step_{}k.pth".format(env_name, number, seed, step)))
+
+    def eval_(self):
+        self.actor.eval()
+        self.critic.eval()
+
+    def save_agent_n(self):
+        torch.save(self.actor.state_dict(), "./param/MAPPO_ACTOR.pkl")
+        torch.save(self.critic.state_dict(), "./param/MAPPO_CRITIC.pkl")
+
+    def load_agent_n_actor(self):
+        state_dict_actor = torch.load("./param/MAPPO_ACTOR.pkl")
+        self.actor.load_state_dict(state_dict_actor)
+
+    def load_agent_n_critic(self):
+        state_dict_critic = torch.load("./param/MAPPO_CRITIC.pkl")
+        self.critic.load_state_dict(state_dict_critic)
