@@ -28,7 +28,7 @@ from torchinfo import summary
 # from calflops import calculate_flops
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 import utils
 
@@ -109,7 +109,7 @@ def get_args_parser():
 
     parser.add_argument('--repeated-aug', action='store_true')
     parser.add_argument('--no-repeated-aug', action='store_false', dest='repeated_aug')
-    parser.set_defaults(repeated_aug=True)
+    parser.set_defaults(repeated_aug=False)
     
     parser.add_argument('--train-mode', action='store_true')
     parser.add_argument('--no-train-mode', action='store_false', dest='train_mode')
@@ -119,6 +119,8 @@ def get_args_parser():
     parser.set_defaults(train_deit=False)
     parser.add_argument('--train_agent', action='store_true')
     parser.set_defaults(train_agent=False)
+    parser.add_argument('--fine_tune', action='store_true')
+    parser.set_defaults(fine_tune=False)
     
     parser.add_argument('--ThreeAugment', action='store_true') #3augment
     
@@ -181,7 +183,7 @@ def get_args_parser():
                         help='start epoch')
     parser.add_argument('--eval', action='store_true', help='Perform evaluation only')
     parser.add_argument('--eval-crop-ratio', default=0.875, type=float, help="Crop ratio for evaluation")
-    parser.add_argument('--fine_tune', action='store_true',help="fine tune ppo with deit")
+    # parser.add_argument('--fine_tune', action='store_true',help="fine tune ppo with deit")
     parser.add_argument('--dist-eval', action='store_true', default=False, help='Enabling distributed evaluation')
     parser.add_argument('--num_workers', default=10, type=int)
     parser.add_argument('--pin-mem', action='store_true',
@@ -189,6 +191,7 @@ def get_args_parser():
     parser.add_argument('--no-pin-mem', action='store_false', dest='pin_mem',
                         help='')
     parser.set_defaults(pin_mem=True)
+    parser.add_argument('--plot_mask', action='store_true')
 
     # distributed training parameters
     parser.add_argument('--world_size', default=1, type=int,
@@ -281,15 +284,15 @@ def main(args):
         batch_size=args.batch_size,
         train_agent=args.train_agent
     )
-    model_base = create_model(
-        args.model_base,
-        pretrained=False,
-        num_classes=args.nb_classes,
-        drop_rate=args.drop,
-        drop_path_rate=args.drop_path,
-        drop_block_rate=None,
-        # args=args
-    )
+    # model_base = create_model(
+    #     args.model_base,
+    #     pretrained=False,
+    #     num_classes=args.nb_classes,
+    #     drop_rate=args.drop,
+    #     drop_path_rate=args.drop_path,
+    #     drop_block_rate=None,
+    #     # args=args
+    # )
             
 
 
@@ -352,7 +355,7 @@ def main(args):
             print('no patch embed')
             
     model.to(device)
-    model_base.to(device)
+    # model_base.to(device)
 
     # close ema for model training
     model_ema = None
@@ -417,20 +420,20 @@ def main(args):
     #             for param in model[name].parameters():
     #                 param.requires_grad = True
 
-    for name, param in model.named_parameters():
-        if args.train_deit:
-            if 'agent' not in name:
-                param.requires_grad = False
-        if args.train_agent:
-            if 'agent' in name:
-                param.requires_grad = True
-            if 'agent' not in name:
-                param.requires_grad = False
-        if args.fine_tune:
-            if 'head' in name and 'agent' not in name:
-                param.requires_grad = True
-            if 'head' not in name:
-                param.requires_grad = False
+    # for name, param in model.named_parameters():
+    #     if args.train_deit:
+    #         if 'agent' not in name:
+    #             param.requires_grad = False
+    #     if args.train_agent:
+    #         if 'agent' in name:
+    #             param.requires_grad = True
+    #         if 'agent' not in name:
+    #             param.requires_grad = False
+    #     if args.fine_tune:
+    #         if 'head' in name and 'agent' not in name:
+    #             param.requires_grad = True
+    #         if 'head' not in name:
+    #             param.requires_grad = False
 
     # for p in model.parameters():
     #     print(p.requires_grad)
@@ -438,6 +441,12 @@ def main(args):
     # print('-------------------------------------------------')
     # for p in model_without_ddp.parameters():
     #     print(p.requires_grad)
+    if args.fine_tune:
+        for name,param in model.agent_n.actor.named_parameters():
+            param.requires_grad = False
+        for name,param in model.agent_n.critic.named_parameters():
+            param.requires_grad = False
+
 
     optimizer = create_optimizer(args, model_without_ddp)
     # optimizer = create_optimizer(args, filter(lambda p: p.requires_grad,
@@ -498,36 +507,49 @@ def main(args):
         # model_base.load_state_dict(checkpoint['model'])
 
         state_dict = model.state_dict()
-        state_dict_base = model_base.state_dict()
-        for name in state_dict_base:
-            state_dict_base[name] = checkpoint['model'][name]
-        model_base.load_state_dict(state_dict_base)
+        # state_dict_base = model_base.state_dict()
+        state_dict_actor = model.agent_n.actor.state_dict()
+        state_dict_critic = model.agent_n.critic.state_dict()
+        # for name in state_dict_base:
+        #     state_dict_base[name] = checkpoint['model'][name]
+        # model_base.load_state_dict(state_dict_base)
 
         checkpoint_deit_model = checkpoint['model']
         if args.distributed:
             state_dict = model.module.state_dict()
 
         checkpoint_ppo_actor = None
-        if args.resume_ppo and os.path.exists('./param/net_param/actor_net.pkl'):
-            checkpoint_ppo_actor = torch.load('./param/net_param/actor_net.pkl',
+        if args.resume_ppo and os.path.exists('./param/epoch0_batch6200_actor.pkl'):
+            checkpoint_ppo_actor = torch.load('./param/epoch0_batch6200_actor.pkl',
                                     map_location='cpu')
         checkpoint_ppo_critic = None
-        if args.resume_ppo and os.path.exists('./param/net_param/critic_net.pkl'):
-            checkpoint_ppo_critic = torch.load('./param/net_param/critic_net.pkl',
+        if args.resume_ppo and os.path.exists('./param/epoch0_batch6200_actor.pkl'):
+            checkpoint_ppo_critic = torch.load('./param/epoch0_batch6200_critic.pkl',
                                     map_location='cpu')
 
         for name in state_dict:
-            if 'agent' not in name:
-                state_dict[name] = checkpoint['model'][name]
-            if 'agent.actor' in name and checkpoint_ppo_actor is not None:
-                state_dict[name] = checkpoint_ppo_actor[name[16:]]
-            if 'agent.critic' in name and checkpoint_ppo_critic is not None:
-                state_dict[name] = checkpoint_ppo_critic[name[17:]]
+            state_dict[name] = checkpoint['model'][name]
+        
+        if args.resume_ppo:
+            for name in state_dict_actor:
+                state_dict_actor[name] = checkpoint_ppo_actor[name]
+        if args.resume_ppo:
+            for name in state_dict_critic:
+                state_dict_critic[name] = checkpoint_ppo_critic[name]
+        # for name in state_dict:
+        #     if 'agent' not in name:
+        #         state_dict[name] = checkpoint['model'][name]
+        #     if 'agent.actor' in name and checkpoint_ppo_actor is not None:
+        #         state_dict[name] = checkpoint_ppo_actor[name[16:]]
+        #     if 'agent.critic' in name and checkpoint_ppo_critic is not None:
+        #         state_dict[name] = checkpoint_ppo_critic[name[17:]]
         if args.distributed:
             print('Load param for distributed PPO')
             model.module.load_state_dict(state_dict)
         if not args.distributed:
             model_without_ddp.load_state_dict(state_dict)
+            model.agent_n.actor.load_state_dict(state_dict_actor)
+            model.agent_n.critic.load_state_dict(state_dict_critic)
         # if not args.train-agent:
             # load agent weights from pth
 
@@ -563,7 +585,7 @@ def main(args):
             data_loader_train.sampler.set_epoch(epoch)
 
         train_stats = train_one_epoch(
-            model, model_base, criterion, data_loader_train, data_loader_val,
+            model, criterion, data_loader_train, data_loader_val,
             optimizer, device, epoch, loss_scaler,
             args.clip_grad, model_ema, mixup_fn,
             set_training_mode=args.train_mode,  # keep in eval mode for deit finetuning / train mode for training and deit III finetuning

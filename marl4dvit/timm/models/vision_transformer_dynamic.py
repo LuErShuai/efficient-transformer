@@ -350,8 +350,8 @@ hem to be on GPU p_rate (float): attention dropout rate
         parser_mappo = argparse.ArgumentParser("Hyperparameters Setting for MAPPO in MPE environment")
         parser_mappo.add_argument("--max_train_steps", type=int, default=int(3e6), help=" Maximum number of training steps")
         parser_mappo.add_argument("--episode_limit", type=int, default=3, help="Maximum number of steps per episode")
-        parser_mappo.add_argument("--evaluate_freq", type=float, default=5000, help="Evaluate the policy every 'evaluate_freq' steps")
-        parser_mappo.add_argument("--evaluate_times", type=float, default=3, help="Evaluate times")
+        # parser_mappo.add_argument("--evaluate_freq", type=float, default=5000, help="Evaluate the policy every 'evaluate_freq' steps")
+        # parser_mappo.add_argument("--evaluate_times", type=float, default=3, help="Evaluate times")
 
         parser_mappo.add_argument("--batch_size", type=int, default=64, help="batch size (the number of episodes)")
         parser_mappo.add_argument("--mini_batch_size", type=int, default=16, help="minibatch size (the number of episodes)")
@@ -495,6 +495,7 @@ hem to be on GPU p_rate (float): attention dropout rate
             # in mask and action, 1 means the agent/token is alive/adopted
             device_2 = next(block.parameters()).device
             if i in [3,6,9]:
+            # if i in [0,3,6]:
                 with torch.no_grad():
                     device_1 = next(self.agent_n.actor.parameters()).device
                     action_n, action_prob_n = self.agent_n.choose_action(x.detach()[:,1:token_num,:],False)
@@ -502,8 +503,9 @@ hem to be on GPU p_rate (float): attention dropout rate
                 mask_without_cls = mask[:,1:token_num]
                 mask[:,1:token_num] = torch.where(mask_without_cls==0, mask_without_cls, action_n)
                 mask[:, 0] = 1
+                temp_mask = mask.clone()
                 
-                out = torch.unique(mask, return_counts=True)
+                # out = torch.unique(mask, return_counts=True)
                  
                 action_n_execute = mask[:,1:token_num]
                 if self.train_agent:
@@ -513,7 +515,7 @@ hem to be on GPU p_rate (float): attention dropout rate
                     self.buffer["action_n"].append(action_n_execute.detach().clone())
                     self.buffer["action_prob_n"].append(action_prob_n.detach())
                     self.buffer["cls_token"].append(x.detach()[:,0,:])
-                    # self.buffer["mask"].append(mask.detach())
+                    self.buffer["mask"].append(temp_mask)
                     x = block.forward(x, mask)
                     self.buffer["state_next_n"].append(x.detach()[:,1:token_num,:])
                     v_next_n = self.agent_n.get_value(x.detach())
@@ -524,6 +526,7 @@ hem to be on GPU p_rate (float): attention dropout rate
                     x = block.forward(x, mask)
 
             if i not in [3,6,9]:
+            # if i not in [0,3,6]:
                 x = block.forward(x, mask)
 
             token_depth += torch.count_nonzero(mask[:,1:token_num]).item()
@@ -652,6 +655,7 @@ hem to be on GPU p_rate (float): attention dropout rate
         return x[:, 0]
 
     def forward(self, x):
+        # shape of x:[96,3,224,224]
         x = self.forward_features(x)
         if self.head_dist is not None:
             x, x_dist = self.head(x[0]), self.head_dist(x[1])

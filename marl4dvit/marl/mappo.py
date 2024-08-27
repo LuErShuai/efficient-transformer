@@ -417,6 +417,13 @@ class MAPPO:
         torch.save(self.actor.state_dict(), "./param/MAPPO_ACTOR.pkl")
         torch.save(self.critic.state_dict(), "./param/MAPPO_CRITIC.pkl")
 
+    def save_agent_n_(self, path):
+
+        _path_actor = "./param/" + str(path) + "_actor.pkl"
+        _path_critic = "./param/" + str(path) + "_critic.pkl"
+        torch.save(self.actor.state_dict(), _path_actor)
+        torch.save(self.critic.state_dict(), _path_critic)
+
     def load_agent_n_actor(self):
         state_dict_actor = torch.load("./param/MAPPO_ACTOR.pkl")
         self.actor.load_state_dict(state_dict_actor)

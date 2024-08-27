@@ -9,6 +9,16 @@ from torchvision.datasets.folder import ImageFolder, default_loader
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from timm.data import create_transform
 
+class ImageFolderWithPaths(ImageFolder):
+    def __getitem__(self, index):
+        original_tuple = super(ImageFolderWithPaths, self).__getitem__(index)
+        image = original_tuple[0]
+        label = original_tuple[1]
+
+        path = self.imgs[index][0]
+        return image, label, path
+        # print(f"Loading image {path}, label {label}")
+        # return image, label
 
 class INatDataset(ImageFolder):
     def __init__(self, root, train=True, year=2018, transform=None, target_transform=None,
@@ -61,11 +71,18 @@ def build_dataset(is_train, args):
         nb_classes = 100
     elif args.data_set == 'IMNET':
         root = os.path.join(args.data_path, 'train' if is_train else 'val')
-        dataset = datasets.ImageFolder(root, transform=transform)
+        # dataset = datasets.ImageFolder(root, transform=transform)
+        # dataset_ = datasets.ImageFolder(root, transform=None)
+        dataset = ImageFolderWithPaths(root, transform=transform)
+        # dataset = ImageFolderWithPaths(root, transform=None)
         nb_classes = 1000
+        return dataset,nb_classes
+
     elif args.data_set == 'INAT':
         dataset = INatDataset(args.data_path, train=is_train, year=2018,
                               category=args.inat_category, transform=transform)
+        # dataset = INatDataset(args.data_path, train=is_train, year=2018,
+        #                       category=args.inat_category, transform=None)
         nb_classes = dataset.nb_classes
     elif args.data_set == 'INAT19':
         dataset = INatDataset(args.data_path, train=is_train, year=2019,
@@ -81,6 +98,7 @@ def build_transform(is_train, args):
         # this should always dispatch to transforms_imagenet_train
         transform = create_transform(
             input_size=args.input_size,
+            # no_aug=True,
             is_training=True,
             color_jitter=args.color_jitter,
             auto_augment=args.aa,

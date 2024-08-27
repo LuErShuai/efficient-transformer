@@ -8,7 +8,7 @@ import sys
 from typing import Iterable, Optional
 
 import torch
-
+import torchvision.transforms as transforms
 from timm.data import Mixup
 from timm.utils import accuracy, ModelEma
 
@@ -22,6 +22,7 @@ import numpy as np
 from tensorboardX import SummaryWriter
 from pathlib import Path
 import json
+from PIL import Image
 
 timestamp = time.time()
 formatted_time = time.strftime("%Y-%m-%d %H:%M:%S",time.localtime(timestamp))
@@ -29,7 +30,7 @@ writer = SummaryWriter('./runs/Agent/reward_{}'.format(formatted_time))
 sample_num = 0
 max_accuracy = 0
 
-def train_one_epoch(model: torch.nn.Module, model_base:torch.nn.Module, criterion: DistillationLoss,
+def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
                     data_loader: Iterable, data_loader_val: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, loss_scaler, max_norm: float = 0,
                     model_ema: Optional[ModelEma] = None, mixup_fn: Optional[Mixup] = None,
@@ -42,10 +43,13 @@ def train_one_epoch(model: torch.nn.Module, model_base:torch.nn.Module, criterio
     # model.agent.reward_one_epoch = 0
     global sample_num
     
-    batch_num = 1
+    batch_num = 0
     keep_ratio = [0,0,0]
     # torch.cuda.empty_cache()
-    for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
+    for samples, targets, paths in metric_logger.log_every(data_loader, print_freq, header):
+    # for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
+    # for samples, targets, paths in data_loader:
+    # for samples, targets in data_loader:
         keep_ratio_batch = [0,0,0]
         token_depth_batch  = 0
 
@@ -64,13 +68,14 @@ def train_one_epoch(model: torch.nn.Module, model_base:torch.nn.Module, criterio
         with torch.cuda.amp.autocast():
             outputs = model(samples)
             loss = criterion(samples, outputs, targets)
-            outputs_base = model_base(samples)
+            # outputs_base = model_base(samples)
         
 
         # size of loss:[batch_size]
         loss_value = loss.item()
 
         # batch_num=0
+        torch.cuda.empty_cache()
         if args.train_agent:
             torch.cuda.empty_cache()
             end_1 = time.perf_counter()
@@ -78,7 +83,7 @@ def train_one_epoch(model: torch.nn.Module, model_base:torch.nn.Module, criterio
             # classify_results = outputs - targets
             _, outputs_max_index = outputs.max(dim=1)
             _, targets_max_index = targets.max(dim=1)
-            _, outputs_base_max_index = outputs_base.max(dim=1)
+            # _, outputs_base_max_index = outputs_base.max(dim=1)
             # self.buffer = 
             # {
             #     "state":[], -> [block_num, batch_size, token_num, token_dim]
@@ -122,7 +127,7 @@ def train_one_epoch(model: torch.nn.Module, model_base:torch.nn.Module, criterio
             cls_token_ = torch.stack(buffers["cls_token"])
             action_n_ = torch.stack(buffers["action_n"])
             action_prob_n_ = torch.stack(buffers["action_prob_n"])
-            # mask_ = torch.stack(buffers["mask"])
+            mask_ = torch.stack(buffers["mask"])
             done_n_ = torch.stack(buffers["done_n"])
             died_ = torch.stack(buffers["done_n"])
 
@@ -149,6 +154,9 @@ def train_one_epoch(model: torch.nn.Module, model_base:torch.nn.Module, criterio
             # token_keep_ratio = 0
             
             batch_reward = 0.0
+
+            if args.plot_mask:
+                plot_mask(batch_num ,paths, mask_)
 
             for i in range(batch_size):
                 # if vit classify wrong, abandon this trajectory
@@ -203,7 +211,13 @@ def train_one_epoch(model: torch.nn.Module, model_base:torch.nn.Module, criterio
 
                     reward_n = caculate_reward_per_image(classify_correct,j,
                                                          done_n, keep_ratio, token_keep_ratio)
+
+                    # batch_reward[torch.isnan(batch_reward)] = 0
+                    reward_n[torch.isnan(reward_n)] = 0
+
                     batch_reward += reward_n.sum()
+                    # batch_reward[torch.isnan(batch_reward)] = 0
+
                     v_n = v_n_[j][i]
                     v_next_n = v_next_n_[j][i]
 
@@ -235,14 +249,18 @@ def train_one_epoch(model: torch.nn.Module, model_base:torch.nn.Module, criterio
         # global max_accuracy
         # if batch_num%100 == 0:
         global max_accuracy
-        if batch_num%200 == 0:
+        # if batch_num%200 == 0:
+        if batch_num%30 == 29:
             test_stat = evaluate(data_loader_val, model, device)
             acc_1 = test_stat["acc1"]
             acc_5 = test_stat["acc5"]
-            if max_accuracy < acc_1:
-                max_accuracy = acc_1
-                writer.add_scalar('acc_1', acc_1, global_step=int(batch_num/500))
-                model.agent_n.save_agent_n()
+            # if max_accuracy < acc_1:
+            #     max_accuracy = acc_1
+            #     writer.add_scalar('acc_1', acc_1, global_step=int(batch_num/500))
+            #     model.agent_n.save_agent_n()
+            writer.add_scalar('acc_1', acc_1, global_step=int(batch_num/500))
+            param_path = "epoch" + str(epoch) + "_" + "batch" + str(batch_num)
+            model.agent_n.save_agent_n_(param_path)
 
             log_stats = {
                      **{f'test_{k}': v for k, v in test_stat.items()},
@@ -255,19 +273,20 @@ def train_one_epoch(model: torch.nn.Module, model_base:torch.nn.Module, criterio
             if args.output_dir and utils.is_main_process():
                 with (output_dir / "log.txt").open("a") as f:
                     f.write(json.dumps(log_stats) + "\n")
-        batch_num += 1
+        if args.train_agent:
+            batch_num += 1
 
 
         if not math.isfinite(loss_value):
             print("Loss is {}, stopping training".format(loss_value))
             sys.exit(1)
 
-        # if args.train_deit or args.fine_tune:
-        #     optimizer.zero_grad()
+        if args.fine_tune:
+            optimizer.zero_grad()
 
-        #     # this attribute is added by timm on one optimizer (adahessian)
-        #     is_second_order = hasattr(optimizer, 'is_second_order') and optimizer.is_second_order
-        #     loss_scaler(loss, optimizer, clip_grad=max_norm, parameters=model.parameters(), create_graph=is_second_order)
+            # this attribute is added by timm on one optimizer (adahessian)
+            is_second_order = hasattr(optimizer, 'is_second_order') and optimizer.is_second_order
+            loss_scaler(loss, optimizer, clip_grad=max_norm, parameters=model.parameters(), create_graph=is_second_order)
 
         # optimizer.zero_grad()
 
@@ -453,10 +472,13 @@ def caculate_reward_per_image(classify_correct, episode_step, done_n,
     
     died_num = done_n.sum()
     alive_num = (1-done_n).sum()
+    # reward_7 = -0.106*(1-done_n)
+    # reward_7 = -0.031*(1-done_n)
     reward_7 = -0.1*(1-done_n)
     reward_8 = (1-done_n)*torch.zeros_like(done_n, dtype=done_n.dtype)
     if classify_correct:
         reward_8 = (1-done_n)*(24/alive_num)
+        # reward_8 = (1-done_n)*(22/alive_num)
 
     # reward = eta*reward_1 + beta*reward_2
     # reward = eta*reward_1 - beta*reward_3
@@ -606,6 +628,70 @@ def caculate_reward(num_block, classify_correct, action):
         
     return reward
 
+
+def plot_mask(batch, paths, mask):
+    # size of x:[64,3,224,224]
+    # size of mask:[3,64,197] 
+
+    images = []
+    transform = transforms.Compose([transforms.Resize((224, 224))])
+    for path in paths:
+        img = Image.open(path)
+        if img.mode == 'L':
+            img = img.convert("RGB")
+        img = transform(img)
+        img_array = np.array(img)
+        img_tensor = torch.tensor(img_array, dtype=torch.float32)
+        img_tensor = img_tensor.permute(2,0,1)
+        images.append(img_tensor)
+
+    x = torch.stack(images)
+
+
+    # Define your transformations
+
+    _mask = mask[:,:,1:197]
+    # size of reshaped_mask:[3,64,14,14]
+    reshaped_mask = _mask.view(3,64,14,14)
+    # size of repeated_x:[4,64,3,224,224]
+    repeated_x = x.repeat(4,1,1,1,1)
+
+    # repeated_x = repeated_x.clamp(0,255) # Ensure pixel values are within [0, 255]
+    # repeated_x = repeated_x.to(torch.uint8)  # Convert to unsigned 8-bit integer type
+    # for i in range(repeated_x.size(1)):
+    #     for j in range(repeated_x.size(0)):
+    #         temp = repeated_x[j,i]
+    #         img_array= temp.permute(1,2,0).cpu().numpy()
+    #         img = Image.fromarray(img_array)
+    #         img.save(f'./plot/{batch}_{i}_{j}.png')
+
+    blank_black = torch.zeros(3,224,224)
+    blank_white = torch.ones(3,224,224)
+
+    modified_x = repeated_x.clone()
+    mask_ = reshaped_mask.clone()
+    for i in range(mask_.size(0)):
+        for j in range(mask_.size(1)):
+            for m in range(mask_.size(2)):
+                for n in range(mask_.size(3)):
+                    if mask_[i,j,m,n] == 0:
+                        modified_x[i+1, j, :, m*16:(m+1)*16, n*16:(n+1)*16] = 255
+
+
+    # Convert the modified tensor back to images and save them
+    modified_x = modified_x.clamp(0,255) # Ensure pixel values are within [0, 255]
+    modified_x = modified_x.to(torch.uint8)  # Convert to unsigned 8-bit integer type
+    # to_pil = transforms.ToPILImage()
+    # size of modified_x:[4,64,3,224,224]
+    for i in range(modified_x.size(1)):
+        for j in range(modified_x.size(0)):
+            temp = modified_x[j,i]
+            img_array= temp.permute(1,2,0).cpu().numpy()
+            img = Image.fromarray(img_array)
+            img.save(f'./plot/{batch}_{i}_{j}.png')
+            # img = to_pil(modified_x[j,i])
+            # img.save(f'./plot/{batch}_{i}_{j}.png')
+
 @torch.no_grad()
 def evaluate(data_loader, model, device):
     criterion = torch.nn.CrossEntropyLoss()
@@ -616,16 +702,19 @@ def evaluate(data_loader, model, device):
     # switch to evaluation mode
     model.eval()
 
-    for images, target in metric_logger.log_every(data_loader, 10, header):
+    for images, targets, paths in metric_logger.log_every(data_loader, 10, header):
+    # for images, targets, paths in metric_logger.log_every(data_loader, 10, header):
+        # shape of images:[96,3,224,224]
         images = images.to(device, non_blocking=True)
-        target = target.to(device, non_blocking=True)
+        # shape of target:[96]
+        targets = targets.to(device, non_blocking=True)
 
         # compute output
         with torch.cuda.amp.autocast():
             output = model(images)
-            loss = criterion(output, target)
+            loss = criterion(output, targets)
 
-        acc1, acc5 = accuracy(output, target, topk=(1, 5))
+        acc1, acc5 = accuracy(output, targets, topk=(1, 5))
 
         batch_size = images.shape[0]
         metric_logger.update(loss=loss.item())
