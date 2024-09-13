@@ -357,7 +357,7 @@ hem to be on GPU p_rate (float): attention dropout rate
         parser_mappo.add_argument("--mini_batch_size", type=int, default=16, help="minibatch size (the number of episodes)")
         parser_mappo.add_argument("--rnn_hidden_dim", type=int, default=64, help="the number of neurons in hidden layers of the rnn")
         parser_mappo.add_argument("--mlp_hidden_dim", type=int, default=64, help="the number of neurons in hidden layers of the mlp")
-        parser_mappo.add_argument("--lr", type=float, default=5e-4, help="learning rate")
+        parser_mappo.add_argument("--lr", type=float, default=5e-6, help="learning rate")
         parser_mappo.add_argument("--gamma", type=float, default=0.99, help="discount factor")
         parser_mappo.add_argument("--lamda", type=float, default=0.95, help="gae parameter")
         parser_mappo.add_argument("--epsilon", type=float, default=0.2, help="gae parameter")
@@ -374,6 +374,7 @@ hem to be on GPU p_rate (float): attention dropout rate
         parser_mappo.add_argument("--use_rnn", type=bool, default=False, help="whether to use rnn")
         parser_mappo.add_argument("--add_agent_id", type=float, default=True, help="whether to add agent_id. here, we do not use it.")
         parser_mappo.add_argument("--use_value_clip", type=float, default=False, help="whether to use value clip.")
+        parser_mappo.add_argument("--rand_die_ratio", type=float, default=1, help="kill tokens randomly according ratio been given")
 
         self.args_mappo, remaining_args = parser_mappo.parse_known_args()
         self.args_mappo.N = 196  # the number of agents
@@ -508,11 +509,11 @@ hem to be on GPU p_rate (float): attention dropout rate
                 # out = torch.unique(mask, return_counts=True)
                  
                 action_n_execute = mask[:,1:token_num]
+                self.buffer["action_n"].append(action_n_execute.detach().clone())
                 if self.train_agent:
                     self.buffer["state_n"].append(x.detach()[:,1:token_num,:])
                     v_n = self.agent_n.get_value(x.detach())
                     self.buffer["v_n"].append(v_n)
-                    self.buffer["action_n"].append(action_n_execute.detach().clone())
                     self.buffer["action_prob_n"].append(action_prob_n.detach())
                     self.buffer["cls_token"].append(x.detach()[:,0,:])
                     self.buffer["mask"].append(temp_mask)
@@ -652,11 +653,12 @@ hem to be on GPU p_rate (float): attention dropout rate
         # else:
         #     return x[:, 0], x[:, 1]
         # print(x[:, 0])
-        return x[:, 0]
+        action_n = torch.stack(self.buffer['action_n'])
+        return x[:, 0], action_n
 
     def forward(self, x):
         # shape of x:[96,3,224,224]
-        x = self.forward_features(x)
+        x, action_n = self.forward_features(x)
         if self.head_dist is not None:
             x, x_dist = self.head(x[0]), self.head_dist(x[1])
             if self.trainning and not torch.jit.is_scipting():
@@ -666,7 +668,7 @@ hem to be on GPU p_rate (float): attention dropout rate
         else:
             x = self.head(x)
 
-        return x
+        return x, action_n
 
 
 def _init_vit_weights(module: nn.Module, name: str = '', head_bias: float = 0., jax_impl: bool = False):

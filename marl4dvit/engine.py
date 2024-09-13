@@ -29,6 +29,8 @@ formatted_time = time.strftime("%Y-%m-%d %H:%M:%S",time.localtime(timestamp))
 writer = SummaryWriter('./runs/Agent/reward_{}'.format(formatted_time))
 sample_num = 0
 max_accuracy = 0
+token_depth_global = 0
+eval_num = 0
 
 def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
                     data_loader: Iterable, data_loader_val: Iterable, optimizer: torch.optim.Optimizer,
@@ -43,7 +45,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
     # model.agent.reward_one_epoch = 0
     global sample_num
     
-    batch_num = 0
+    batch_num = 1
     keep_ratio = [0,0,0]
     # torch.cuda.empty_cache()
     for samples, targets, paths in metric_logger.log_every(data_loader, print_freq, header):
@@ -66,7 +68,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
             targets = targets.gt(0.0).type(targets.dtype)
                     
         with torch.cuda.amp.autocast():
-            outputs = model(samples)
+            outputs, action_n = model(samples)
             loss = criterion(samples, outputs, targets)
             # outputs_base = model_base(samples)
         
@@ -210,7 +212,9 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
                     # keep = torch.unique(done_n, return_counts=True)
 
                     reward_n = caculate_reward_per_image(classify_correct,j,
-                                                         done_n, keep_ratio, token_keep_ratio)
+                                                         done_n, keep_ratio,
+                                                         token_keep_ratio,
+                                                         token_depth)
 
                     # batch_reward[torch.isnan(batch_reward)] = 0
                     reward_n[torch.isnan(reward_n)] = 0
@@ -249,30 +253,32 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
         # global max_accuracy
         # if batch_num%100 == 0:
         global max_accuracy
-        # if batch_num%200 == 0:
-        if batch_num%30 == 29:
-            test_stat = evaluate(data_loader_val, model, device)
+        if batch_num%200 == 0:
+        # if batch_num%30 == 29:
+            param_path = "epoch" + str(epoch) + "_" + "batch" + str(batch_num)
+            model.agent_n.save_agent_n_(param_path)
+
+            test_stat = evaluate_(data_loader_val, model, device, batch_num, args)
             acc_1 = test_stat["acc1"]
             acc_5 = test_stat["acc5"]
+            writer.add_scalar('acc_1', acc_1, global_step=int(batch_num/500))
             # if max_accuracy < acc_1:
             #     max_accuracy = acc_1
             #     writer.add_scalar('acc_1', acc_1, global_step=int(batch_num/500))
             #     model.agent_n.save_agent_n()
-            writer.add_scalar('acc_1', acc_1, global_step=int(batch_num/500))
-            param_path = "epoch" + str(epoch) + "_" + "batch" + str(batch_num)
-            model.agent_n.save_agent_n_(param_path)
 
-            log_stats = {
-                     **{f'test_{k}': v for k, v in test_stat.items()},
-                     'batch_num': batch_num,
-                     'keep_ratio_batch': [x/batch_size for x in keep_ratio_batch],
-                     'token_depth_batch': token_depth_batch,
-                    }
+            # log_stats = {
+            #          **{f'test_{k}': v for k, v in test_stat.items()},
+            #          'batch_num': batch_num,
+            #          'keep_ratio_batch': [x/batch_size for x in keep_ratio_batch],
+            #          'token_depth_batch': token_depth_batch,
+            #         }
         
-            output_dir = Path(args.output_dir)
-            if args.output_dir and utils.is_main_process():
-                with (output_dir / "log.txt").open("a") as f:
-                    f.write(json.dumps(log_stats) + "\n")
+            # output_dir = Path(args.output_dir)
+            # if args.output_dir and utils.is_main_process():
+            #     with (output_dir / "log.txt").open("a") as f:
+            #         f.write(json.dumps(log_stats) + "\n")
+
         if args.train_agent:
             batch_num += 1
 
@@ -307,7 +313,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 def caculate_reward_per_image(classify_correct, episode_step, done_n,
-                              keep_ratio, token_keep_ratio):
+                              keep_ratio, token_keep_ratio,token_depth):
 
     # keep = torch.unique(done_n, return_counts=True)
     # keep_num = done_n.numel() - done_n.sum()
@@ -478,8 +484,17 @@ def caculate_reward_per_image(classify_correct, episode_step, done_n,
     reward_8 = (1-done_n)*torch.zeros_like(done_n, dtype=done_n.dtype)
     if classify_correct:
         reward_8 = (1-done_n)*(24/alive_num)
+        # reward_8 = (24/alive_num)
         # reward_8 = (1-done_n)*(22/alive_num)
 
+    # delta = token_depth/2352 - 0.7
+    delta = (-keep_ratio_temp[episode_step] + keep_ratio[episode_step])
+    if delta > 0:
+        reward_9 = -math.exp(delta)*(1-done_n)
+    else:
+        reward_9 = -math.exp(-delta)*done_n
+
+    reward_10 = 1 - math.exp(abs(delta))
     # reward = eta*reward_1 + beta*reward_2
     # reward = eta*reward_1 - beta*reward_3
     # reward = eta*reward_1 + beta*reward_4/(episode_step + 1)
@@ -489,7 +504,8 @@ def caculate_reward_per_image(classify_correct, episode_step, done_n,
     #     reward = torch.zeros_like(done_n, dtype=torch.float32)
     # return 1-done_n
     # return reward_1*torch.ones_like(done_n, dtype=torch.float32)
-    return reward_7 + reward_8
+    # return 1.0*reward_7 + 1.0*reward_8
+    return 1.0*reward_8 + 1.0*reward_9
 
     
     
@@ -701,6 +717,8 @@ def evaluate(data_loader, model, device):
 
     # switch to evaluation mode
     model.eval()
+    model.agent_n.eval_()
+    # model.train(True)
 
     for images, targets, paths in metric_logger.log_every(data_loader, 10, header):
     # for images, targets, paths in metric_logger.log_every(data_loader, 10, header):
@@ -711,7 +729,9 @@ def evaluate(data_loader, model, device):
 
         # compute output
         with torch.cuda.amp.autocast():
-            output = model(images)
+            # shape of action_n: [3,96,196]
+            output, action_n = model(images)
+
             loss = criterion(output, targets)
 
         acc1, acc5 = accuracy(output, targets, topk=(1, 5))
@@ -726,3 +746,81 @@ def evaluate(data_loader, model, device):
           .format(top1=metric_logger.acc1, top5=metric_logger.acc5, losses=metric_logger.loss))
 
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+
+@torch.no_grad()
+def evaluate_(data_loader, model, device, train_batch_num, args):
+    global eval_num
+    global token_depth_global
+    criterion = torch.nn.CrossEntropyLoss()
+
+    metric_logger = utils.MetricLogger(delimiter="  ")
+    header = 'Test:'
+
+    # switch to evaluation mode
+    model.eval()
+    model.agent_n.eval_()
+
+    keep_ratio = torch.tensor([0,0,0]).to('cuda')
+    token_depth  = 0
+    batch_num = 0
+    for images, targets, paths in metric_logger.log_every(data_loader, 10, header):
+    # for images, targets, paths in metric_logger.log_every(data_loader, 10, header):
+        # shape of images:[96,3,224,224]
+        images = images.to(device, non_blocking=True)
+        # shape of target:[96]
+        targets = targets.to(device, non_blocking=True)
+
+        # compute output
+        with torch.cuda.amp.autocast():
+            # shape of action_n: [3,96,196]
+            output, action_n = model(images)
+
+            action_n_sum = torch.sum(action_n, dim=(1,2))
+            keep_ratio_batch = action_n_sum/(96*196)
+
+            keep_ratio = keep_ratio + keep_ratio_batch
+            batch_num += 1
+            token_depth += 3*196*96
+            token_depth += 3*torch.sum(action_n_sum)
+
+            loss = criterion(output, targets)
+
+        acc1, acc5 = accuracy(output, targets, topk=(1, 5))
+
+        batch_size = images.shape[0]
+        metric_logger.update(loss=loss.item())
+        metric_logger.meters['acc1'].update(acc1.item(), n=batch_size)
+        metric_logger.meters['acc5'].update(acc5.item(), n=batch_size)
+    # gather the stats from all processes
+    metric_logger.synchronize_between_processes()
+    print('* Acc@1 {top1.global_avg:.3f} Acc@5 {top5.global_avg:.3f} loss {losses.global_avg:.3f}'
+          .format(top1=metric_logger.acc1, top5=metric_logger.acc5, losses=metric_logger.loss))
+
+    # keep_ratio_temp = [x/batch_num for x in keep_ratio]
+    # keep_ratio_array = keep_ratio_temp.cpu().numpy()
+    keep_ratio = keep_ratio.cpu().numpy()
+    token_depth = token_depth.cpu().numpy()
+
+    if train_batch_num == 0:
+        eval_num = 0
+        token_depth_global = 0
+    temp = token_depth/batch_num
+    eval_num += 1
+    token_depth_global += temp
+    token_depth_global_average = token_depth_global/eval_num
+    log_stats = {
+             **{f'test_{k}': meter.global_avg for k, meter in metric_logger.meters.items()},
+             'batch_num': train_batch_num,
+             'keep_ratio': [x/batch_num for x in keep_ratio],
+             'token_depth': [token_depth/batch_num],
+             'token_depth_average': [token_depth_global_average],
+            }
+    
+    output_dir = Path(args.output_dir)
+    if args.output_dir and utils.is_main_process():
+        with (output_dir / "log.txt").open("a") as f:
+            f.write(json.dumps(log_stats) + "\n")
+
+    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+
+

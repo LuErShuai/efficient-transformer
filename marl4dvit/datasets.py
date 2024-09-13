@@ -98,7 +98,7 @@ def build_transform(is_train, args):
         # this should always dispatch to transforms_imagenet_train
         transform = create_transform(
             input_size=args.input_size,
-            # no_aug=True,
+            no_aug=True,
             is_training=True,
             color_jitter=args.color_jitter,
             auto_augment=args.aa,

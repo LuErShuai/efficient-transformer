@@ -141,6 +141,7 @@ class MAPPO:
         self.use_rnn = args.use_rnn
         self.add_agent_id = args.add_agent_id
         self.use_value_clip = args.use_value_clip
+        self.rand_die_ratio = args.rand_die_ratio
         timestamp = time.time()
         formatted_time = time.strftime("%Y-%m-%d %H:%M:%S",time.localtime(timestamp))
         self.writer = SummaryWriter('./runs/Agent/loss_{}'.format(formatted_time))
@@ -201,6 +202,10 @@ class MAPPO:
                 a_n = dist.sample()
                 a_logprob_n = dist.log_prob(a_n)
                 # return a_n.numpy(), a_logprob_n.numpy()
+                if self.rand_die_ratio != 1:
+                    mask = np.random.choice([0,1],size=a_n.shape,p=[self.rand_die_ratio,1-self.rand_die_ratio])
+                    mask_tensor = torch.tensor(mask, device=a_n.device)
+                    a_n = mask_tensor
                 return a_n, a_logprob_n
 
     def get_value(self, s):

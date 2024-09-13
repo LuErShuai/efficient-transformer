@@ -28,7 +28,7 @@ from torchinfo import summary
 # from calflops import calculate_flops
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 
 import utils
 
@@ -75,6 +75,10 @@ def get_args_parser():
                         help='LR scheduler (default: "cosine"')
     parser.add_argument('--lr', type=float, default=5e-4, metavar='LR',
                         help='learning rate (default: 5e-4)')
+    # parser.add_argument('--lr', type=float, default=5e-5, metavar='LR',
+    #                     help='learning rate (default: 5e-4)')
+    # parser.add_argument('--lr', type=float, default=5e-6, metavar='LR',
+    #                     help='learning rate (default: 5e-4)')
     parser.add_argument('--lr-noise', type=float, nargs='+', default=None, metavar='pct, pct',
                         help='learning rate noise on/off epoch percentages')
     parser.add_argument('--lr-noise-pct', type=float, default=0.67, metavar='PERCENT',
@@ -519,12 +523,12 @@ def main(args):
             state_dict = model.module.state_dict()
 
         checkpoint_ppo_actor = None
-        if args.resume_ppo and os.path.exists('./param/epoch0_batch6200_actor.pkl'):
-            checkpoint_ppo_actor = torch.load('./param/epoch0_batch6200_actor.pkl',
+        if args.resume_ppo and os.path.exists('./param/img/epoch3_batch3600_actor.pkl'):
+            checkpoint_ppo_actor = torch.load('./param/img/epoch3_batch3600_actor.pkl',
                                     map_location='cpu')
         checkpoint_ppo_critic = None
-        if args.resume_ppo and os.path.exists('./param/epoch0_batch6200_actor.pkl'):
-            checkpoint_ppo_critic = torch.load('./param/epoch0_batch6200_critic.pkl',
+        if args.resume_ppo and os.path.exists('./param/img/epoch3_batch3600_actor.pkl'):
+            checkpoint_ppo_critic = torch.load('./param/img/epoch3_batch3600_critic.pkl',
                                     map_location='cpu')
 
         for name in state_dict:
